@@ -314,6 +314,13 @@ HF_HOME=/home/dx/.cache/huggingface HUGGINGFACE_HUB_CACHE=/home/dx/.cache/huggin
 **预期效果**：正式 best checkpoint 必然来自 residual fusion 已参与训练的阶段，同时 smoke 子集不再产生无意义警告。
 **文档同步**：idea_report.md 否 | implementation.md 否 | configs/ 否
 
+### 2026-09-13 — 迭代 #6 结果：官方超参数的 group-safe 四分类基线
+
+**训练结果**：使用同一 `group overlap=0` 数据划分、官方 seed 3407、lr 2.9e-5 和 batch 16；第 14 轮取得最佳 validation macro-F1 0.920429，训练在第 19 轮触发 patience-5 早停。最佳模型测试 accuracy 0.943438、macro-F1 0.911599、macro-AUROC 0.985618、macro TPR@1%FPR 0.808134。
+**相对 seed-42/lr-2.5e-5 group-safe baseline**：accuracy +0.010313、macro-F1 +0.009265、macro-AUROC +0.001944、macro TPR@1%FPR +0.033440。Polished TPR@1%FPR 从 0.720000 提升到 0.851250；Generated 从 0.659317 降到 0.640114。
+**与论文严格 group-aware 结果比较**：macro TPR@1%FPR 仍低 0.010866，但 macro-AUROC 高 0.019718；差距主要集中在 Generated TPR@1%FPR（本地 0.640114，论文 0.752000）。这说明官方超参数显著缩小了低误报指标差距，但不同数据 partition 仍是不可忽略的变量。
+**GitHub 轻量产物**：`reports/group_safe_official_seed3407_lr29e-6/` 包含完整 test metrics、resolved args、validation history 和对比说明；603 MB checkpoint 与 42 MB prediction dump 仅保留本地。
+
 ### 2026-09-13 — 迭代 #6：修正官方参数训练入口的缓存路径
 
 **改动原因**：首次启动在 tokenizer 加载前被宿主环境已有的只读 `HF_HOME=/media/dx/文档/hf_cache` 阻断，尚未进入训练。
