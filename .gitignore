@@ -1,0 +1,34 @@
+# Local environment and secrets
+.env
+.env.*
+!example.env
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Training data, outputs, checkpoints, and runtime logs
+data
+results/
+logs/
+debug/
+runs/
+*.pt
+*.pth
+*.ckpt
+*.bin
+events.out.tfevents.*
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Accidental local artifact
+=
