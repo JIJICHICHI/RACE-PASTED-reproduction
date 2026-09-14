@@ -1728,3 +1728,39 @@ Shape and mask contract:
   masks only when a deterministic paired target exists;
 - an empty direction contributes differentiable zero loss;
 - four-class logits remain `[B, 4]`.
+
+## Creator-Retention / Editor-Modification Addendum
+
+`utils/creator_retention_label_builder.py` reads the already group-safe dual
+four-class JSONL files. Within each split it resolves `Human -> Polished` and
+`Generated -> Humanized` references by stored reference ID, computes unrescaled
+SciBERT BERTScore Recall in batches, and writes the original records plus
+`creator_retention_score`, `creator_retention_mask`,
+`creator_retention_reference_id`, and `creator_retention_direction`. Human and
+Generated receive exact self-retention 1.0. No source text is included as a
+model input.
+
+`utils/flexible_dataset.py` exposes the retention score and mask as `[B]`
+tensors. `models/flexible_model.py` adds an optional
+`creator_retention_head(h_root) -> [B]`, sigmoid-bounded scores, a residual
+fusion projection, and a zero-initialized scalar gate. Existing polishing and
+humanization trace heads jointly constitute the Editor Modification branch and
+remain independently supervised.
+
+`train_pasted_race_fourclass.py` conditionally computes masked document MSE,
+logs Creator regression metrics and predictions, includes the new head during
+the calibration epoch, and adds `creator_retention_loss_weight` in joint
+training. Existing configs with `use_creator_retention=false` remain behaviorally
+unchanged.
+
+`configs/pasted_race/PASTED_RACE_fourclass_creator_editor_joint.json` defines
+the full three-objective experiment. `scripts/build_creator_retention_data.sh`
+generates its dataset; `scripts/train_pasted_race_creator_editor.sh` runs it.
+
+Validation contract:
+
+- classification logits `[B,4]` and retention scores `[B]`;
+- retention targets are finite and in `[0,1]`, with one valid mask per document;
+- no group overlap and every edited item resolves to a same-group source;
+- all three residual gates equal zero immediately after checkpoint loading;
+- legacy baseline and dual-trace configs pass unchanged forward smoke tests.

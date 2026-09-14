@@ -29,6 +29,21 @@ LOGGER = logging.getLogger("pasted_race_fourclass")
 CLASS_NAMES = ["human", "polished", "generated", "humanized"]
 
 
+def masked_scalar_mse(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    masks: torch.Tensor,
+    device: torch.device,
+) -> torch.Tensor:
+    """Masked mean MSE for one scalar Creator Retention target per document."""
+    targets = targets.to(device)
+    masks = masks.to(device)
+    valid = masks > 0
+    if not bool(valid.any()):
+        return predictions.sum() * 0.0
+    return F.mse_loss(predictions[valid], targets[valid])
+
+
 def limit_dataset(dataset, limit: int | None, seed: int, shuffle: bool):
     if limit is None or limit >= len(dataset):
         return dataset
@@ -39,14 +54,20 @@ def limit_dataset(dataset, limit: int | None, seed: int, shuffle: bool):
     return Subset(dataset, indices[:limit])
 
 
-def make_loader(dataset, batch_size: int, workers: int, stratified: bool) -> DataLoader:
+def make_loader(
+    dataset,
+    batch_size: int,
+    workers: int,
+    stratified: bool,
+    seed: int = 42,
+) -> DataLoader:
     if stratified:
         labels = [int(dataset[index]["label"].item()) for index in range(len(dataset))]
         counts = Counter(labels)
         weights = torch.tensor([1.0 / counts[label] for label in labels], dtype=torch.double)
         sampler = WeightedRandomSampler(
             weights, num_samples=len(weights), replacement=True,
-            generator=torch.Generator().manual_seed(42),
+            generator=torch.Generator().manual_seed(seed),
         )
     else:
         sampler = SequentialSampler(dataset)
@@ -125,10 +146,13 @@ def evaluate(
     lexical_predictions: list[float] = []
     humanization_targets: list[float] = []
     humanization_predictions: list[float] = []
+    creator_targets: list[float] = []
+    creator_predictions: list[float] = []
     records: list[dict[str, Any]] = []
     ce_sum = 0.0
     trace_sum = 0.0
     humanization_sum = 0.0
+    creator_sum = 0.0
     batches = 0
 
     for batch in loader:
@@ -156,9 +180,21 @@ def evaluate(
                 logits.new_empty((0,)) for _ in range(len(batch["labels"]))
             ]
             humanization_loss = torch.zeros((), device=device)
+        creator_scores = output.get("creator_retention_scores")
+        if creator_scores is not None:
+            creator_loss = masked_scalar_mse(
+                creator_scores,
+                batch["creator_retention_scores"],
+                batch["creator_retention_masks"],
+                device,
+            )
+        else:
+            creator_scores = logits.new_zeros((len(batch["labels"]),))
+            creator_loss = torch.zeros((), device=device)
         ce_sum += float(F.cross_entropy(logits, labels).item())
         trace_sum += float(trace_loss.item())
         humanization_sum += float(humanization_loss.item())
+        creator_sum += float(creator_loss.item())
         batches += 1
         all_logits.append(logits.cpu())
         all_labels.append(labels.cpu())
@@ -167,12 +203,15 @@ def evaluate(
         for (
             item_id, label, probability, item_logits, score, target, mask,
             humanization_score, humanization_target, humanization_mask,
+            creator_score, creator_target, creator_mask,
         ) in zip(
             batch["id"], batch["labels"], probabilities, logits,
             output["lexical_trace_scores"], batch["edu_lexical_scores"],
             batch["edu_lexical_masks"],
             humanization_scores, batch["edu_humanization_scores"],
             batch["edu_humanization_masks"],
+            creator_scores, batch["creator_retention_scores"],
+            batch["creator_retention_masks"],
         ):
             length = min(score.numel(), target.numel(), mask.numel())
             score_values = score[:length].detach().cpu().tolist()
@@ -202,6 +241,9 @@ def evaluate(
                 if valid:
                     humanization_predictions.append(float(prediction))
                     humanization_targets.append(float(gold))
+            if float(creator_mask.item()) > 0:
+                creator_predictions.append(float(creator_score.detach().cpu().item()))
+                creator_targets.append(float(creator_target.item()))
             records.append(
                 {
                     "item_id": item_id,
@@ -217,6 +259,11 @@ def evaluate(
                     "humanization_masks": [
                         int(value) for value in humanization_mask_values
                     ],
+                    "creator_retention_score": float(
+                        creator_score.detach().cpu().item()
+                    ),
+                    "creator_retention_target": float(creator_target.item()),
+                    "creator_retention_mask": int(creator_mask.item()),
                 }
             )
 
@@ -243,9 +290,15 @@ def evaluate(
         metrics.update(
             {f"humanization_{key}": value for key, value in humanization_metrics.items()}
         )
+    if creator_targets:
+        creator_metrics = calculate_metrics(creator_targets, creator_predictions)
+        metrics.update(
+            {f"creator_retention_{key}": value for key, value in creator_metrics.items()}
+        )
     metrics["ce_loss"] = ce_sum / max(batches, 1)
     metrics["lexical_loss"] = trace_sum / max(batches, 1)
     metrics["humanization_loss"] = humanization_sum / max(batches, 1)
+    metrics["creator_retention_loss"] = creator_sum / max(batches, 1)
     metrics["documents"] = int(len(labels))
     if model.lexical_residual_gamma is not None:
         metrics["lexical_residual_gamma"] = float(
@@ -254,6 +307,10 @@ def evaluate(
     if model.humanization_residual_gamma is not None:
         metrics["humanization_residual_gamma"] = float(
             model.humanization_residual_gamma.detach().cpu().item()
+        )
+    if model.creator_retention_residual_gamma is not None:
+        metrics["creator_retention_residual_gamma"] = float(
+            model.creator_retention_residual_gamma.detach().cpu().item()
         )
     metrics = _to_builtin(metrics)
 
@@ -270,7 +327,11 @@ def set_calibration_trainability(
     for name, parameter in model.named_parameters():
         if calibration:
             parameter.requires_grad = name.startswith(
-                ("lexical_trace_head.", "humanization_trace_head.")
+                (
+                    "lexical_trace_head.",
+                    "humanization_trace_head.",
+                    "creator_retention_head.",
+                )
             )
         else:
             parameter.requires_grad = joint_trainability[name]
@@ -336,8 +397,11 @@ def main() -> None:
     datasets["val"] = limit_dataset(datasets["val"], args.max_eval_samples, 0, False)
     datasets["test"] = limit_dataset(datasets["test"], args.max_eval_samples, 0, False)
     workers = int(config.get("num_workers", 0))
+    run_seed = int(config.get("seed", 42))
     loaders = {
-        "train": make_loader(datasets["train"], int(config["batch_size"]), workers, True),
+        "train": make_loader(
+            datasets["train"], int(config["batch_size"]), workers, True, run_seed
+        ),
         "val": make_loader(datasets["val"], int(config["eval_batch_size"]), workers, False),
         "test": make_loader(datasets["test"], int(config["eval_batch_size"]), workers, False),
     }
@@ -368,6 +432,11 @@ def main() -> None:
         and model.humanization_residual_gamma.item() != 0.0
     ):
         raise ValueError("Humanization residual gamma must initialize to exactly zero")
+    if (
+        model.creator_retention_residual_gamma is not None
+        and model.creator_retention_residual_gamma.item() != 0.0
+    ):
+        raise ValueError("Creator Retention residual gamma must initialize to exactly zero")
     with (output_dir / "initialization_report.json").open("w", encoding="utf-8") as report_file:
         json.dump(
             {
@@ -435,6 +504,7 @@ def main() -> None:
             "ce": 0.0,
             "trace": 0.0,
             "humanization": 0.0,
+            "creator_retention": 0.0,
         }
         for step, batch in enumerate(loaders["train"], start=1):
             optimizer.zero_grad(set_to_none=True)
@@ -450,9 +520,15 @@ def main() -> None:
                 device,
                 allow_empty=True,
             ) if "humanization_trace_scores" in output else torch.zeros((), device=device)
+            creator_loss = masked_scalar_mse(
+                output["creator_retention_scores"],
+                batch["creator_retention_scores"],
+                batch["creator_retention_masks"],
+                device,
+            ) if "creator_retention_scores" in output else torch.zeros((), device=device)
             if calibration:
                 ce_loss = torch.zeros((), device=device)
-                loss = trace_loss + humanization_loss
+                loss = trace_loss + humanization_loss + creator_loss
             else:
                 ce_loss = F.cross_entropy(output["logits"], batch["labels"].to(device))
                 loss = (
@@ -460,6 +536,8 @@ def main() -> None:
                     + float(config.get("lexical_loss_weight", 0.2)) * trace_loss
                     + float(config.get("humanization_loss_weight", 0.2))
                     * humanization_loss
+                    + float(config.get("creator_retention_loss_weight", 0.2))
+                    * creator_loss
                 )
             loss.backward()
             clip_grad_norm_(trainable, float(config.get("max_grad_norm", 1.0)))
@@ -469,16 +547,20 @@ def main() -> None:
             running["ce"] += float(ce_loss.item())
             running["trace"] += float(trace_loss.item())
             running["humanization"] += float(humanization_loss.item())
+            running["creator_retention"] += float(creator_loss.item())
             if step % int(config.get("logging_steps", 25)) == 0:
                 LOGGER.info(
-                    "epoch=%d step=%d/%d loss=%.6f ce=%.6f trace=%.6f humanization=%.6f gamma_p=%.6f gamma_h=%.6f",
+                    "epoch=%d step=%d/%d loss=%.6f ce=%.6f trace=%.6f humanization=%.6f creator=%.6f gamma_p=%.6f gamma_h=%.6f gamma_c=%.6f",
                     epoch + 1, step, len(loaders["train"]),
                     running["loss"] / step, running["ce"] / step,
                     running["trace"] / step,
                     running["humanization"] / step,
+                    running["creator_retention"] / step,
                     float(model.lexical_residual_gamma.detach().cpu().item()),
                     float(model.humanization_residual_gamma.detach().cpu().item())
                     if model.humanization_residual_gamma is not None else 0.0,
+                    float(model.creator_retention_residual_gamma.detach().cpu().item())
+                    if model.creator_retention_residual_gamma is not None else 0.0,
                 )
 
         val_metrics = evaluate(model, loaders["val"], device)

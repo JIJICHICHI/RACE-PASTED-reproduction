@@ -140,3 +140,59 @@ whether the second branch recovers Humanized AUROC/TPR@1%FPR without erasing
 the Polished gain. Report both heads' EDU metrics and both learned residual
 gates separately. One calibration epoch updates only the two trace heads;
 later epochs optimize four-class CE plus both masked MSE losses.
+
+## Part 2 — Method: Creator Retention and Editor Modification
+
+The public `gyc-nii/CAS-CS-and-dual-head-detector` repository currently
+publishes the multi-task dataset but not detector code. Its reusable supervision
+contract is a document-level SciBERT/BERT-Sci BERTScore regression target plus
+token labels. We adapt the regression target, not an unavailable architecture.
+
+For each group-safe RACE pair, Creator Retention is the unrescaled BERTScore
+Recall whose reference is the original creator text and whose candidate is the
+final text:
+
+\[
+CR_{H\rightarrow P}=R_{BERT}(H,P),\qquad
+CR_{G\rightarrow Hu}=R_{BERT}(G,Hu).
+\]
+
+Recall averages, over creator/reference tokens, the maximum contextual cosine
+similarity to any final-text token. Consequently it asks how much creator
+content survives, rather than what fraction of the final text was human-written.
+Unedited Human and Generated examples use the exact self-retention target 1.
+
+The detector receives only the final document. A document head predicts
+`sigmoid(f_CR(h_root))`; its paired source is used only to construct the offline
+target. The existing two EDU `1-BLEU4` heads become direction-specific
+subheads of the Editor Modification branch. Their question remains how much
+the editor changed each EDU. The combined representation is initialized as:
+
+\[
+h_{final}=h_{root}+\gamma_pF_p+\gamma_hF_h+\gamma_cF_c,
+\qquad \gamma_p=\gamma_h=\gamma_c=0,
+\]
+
+where `F_c` receives `h_root` together with its retention-gated version. The
+objective is
+
+\[
+L=L_{CE}^{4class}+\lambda_cL_{MSE}^{CR}
+ +\lambda_pL_{MSE}^{1-BLEU(H,P)}
+ +\lambda_hL_{MSE}^{1-BLEU(G,Hu)}.
+\]
+
+This gives the branches non-duplicated semantics: Creator models source-content
+retention at document level; Editor models local editing intensity at EDU level.
+
+## Part 3 — Creator/Editor Experiment Design
+
+Use the existing 4,000-group manifest and never split members of one source
+group across train/validation/test. Compare (1) strong RACE, (2) Editor-only
+dual trace, and (3) Creator Retention + Editor Modification under the same
+split and optimization settings. Report four-class macro-F1/AUROC and strict
+TPR@1%FPR, Creator MSE/Pearson/Spearman, both Editor regression metric sets,
+and all three learned residual gates. Required ablations are Creator auxiliary
+loss without Creator fusion, Creator fusion without Editor fusion, and the full
+model. Retention labels must record model name, unrescaled setting, direction,
+and reference ID so their provenance is auditable.

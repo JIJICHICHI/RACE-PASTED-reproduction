@@ -241,6 +241,9 @@ class FlexibleGraphDataset(Dataset):
             humanization_scores = [0.0] * n_valid_edu
             humanization_masks = [0] * n_valid_edu
 
+        creator_retention_score = float(item.get("creator_retention_score", 0.0))
+        creator_retention_mask = float(item.get("creator_retention_mask", 0.0))
+
         return {
             "id": item.get("item_id"),  # Add the item's ID for tracking
             "nodes": nodes,  # Keep full nodes for graph building, builder must be robust
@@ -263,9 +266,18 @@ class FlexibleGraphDataset(Dataset):
             "edu_humanization_masks": torch.tensor(
                 humanization_masks, dtype=torch.float
             ),
+            "creator_retention_score": torch.tensor(
+                creator_retention_score, dtype=torch.float
+            ),
+            "creator_retention_mask": torch.tensor(
+                creator_retention_mask, dtype=torch.float
+            ),
             "has_trace_ref": bool(item.get("has_trace_ref", False)),
             "evidence_ref_id": item.get("evidence_ref_id"),
             "lexical_reference_id": item.get("lexical_reference_id"),
+            "creator_retention_reference_id": item.get(
+                "creator_retention_reference_id"
+            ),
             "label": torch.tensor(cat_label, dtype=torch.long),
             "domain_label": torch.tensor(domain_label, dtype=torch.long),
         }
@@ -295,6 +307,8 @@ class FlexibleGraphDataset(Dataset):
         edu_lexical_masks = []
         edu_humanization_scores = []
         edu_humanization_masks = []
+        creator_retention_scores = []
+        creator_retention_masks = []
         has_trace_ref = []
 
         # Find the max length in the batch for padding
@@ -320,6 +334,10 @@ class FlexibleGraphDataset(Dataset):
                     edu_humanization_scores.append(value)
                 elif key == "edu_humanization_masks":
                     edu_humanization_masks.append(value)
+                elif key == "creator_retention_score":
+                    creator_retention_scores.append(value)
+                elif key == "creator_retention_mask":
+                    creator_retention_masks.append(value)
                 elif key == "has_trace_ref":
                     has_trace_ref.append(value)
                 elif key in ["full_text_input_ids", "full_text_attention_mask"]:
@@ -350,6 +368,14 @@ class FlexibleGraphDataset(Dataset):
             collated_batch["edu_humanization_scores"] = edu_humanization_scores
         if edu_humanization_masks:
             collated_batch["edu_humanization_masks"] = edu_humanization_masks
+        if creator_retention_scores:
+            collated_batch["creator_retention_scores"] = torch.stack(
+                creator_retention_scores
+            )
+        if creator_retention_masks:
+            collated_batch["creator_retention_masks"] = torch.stack(
+                creator_retention_masks
+            )
         if has_trace_ref:
             collated_batch["has_trace_ref"] = has_trace_ref
         # Stack the padded tensors to create a single batch tensor

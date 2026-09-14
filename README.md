@@ -264,6 +264,20 @@ bash scripts/build_pasted_race_fourclass_dual.sh
 bash scripts/train_pasted_race_fourclass_dual_joint.sh
 ```
 
+### Creator Retention + Editor Modification
+
+Generate document-level Creator Retention labels with unrescaled SciBERT
+BERTScore Recall, then train the joint four-class model:
+
+```bash
+bash scripts/build_creator_retention_data.sh
+bash scripts/train_pasted_race_creator_editor.sh
+```
+
+The paired creator text is used only for offline target generation. Model
+inference consumes only the final document. The two existing EDU `1-BLEU4`
+heads remain the direction-specific Editor Modification supervision.
+
 ## 8. Citation
 
 If you find this work useful, please cite our paper:

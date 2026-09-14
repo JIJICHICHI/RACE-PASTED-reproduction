@@ -82,3 +82,33 @@
 - After the seed-42 result, run joint-fusion stability experiments with seeds
   2026 and 3407 in separate output directories. Keep the data split, baseline
   checkpoint, both lexical checkpoints, architecture, and hyperparameters fixed.
+
+## P0 Strong RACE Baseline Multi-seed Control
+
+- Run the original RACE architecture on the same group-safe four-class split
+  with seeds `42`, `2026`, and `3407`.
+- Use the official checkpoint optimization settings: learning rate `2.9e-5`,
+  batch size `16`, 20 maximum epochs, linear warm-up ratio `0.1`, patience `5`,
+  and validation macro-F1 checkpoint selection.
+- Reuse the completed seed-3407 run and train only the missing seed-42 and
+  seed-2026 runs.
+- Compare the baseline three-seed mean and sample standard deviation against
+  the completed dual-trace three-seed results before claiming stable gains.
+
+## Creator-Retention / Editor-Modification Integration
+
+- Reference `gyc-nii/CAS-CS-and-dual-head-detector` only for its published
+  multi-task data contract; its detector implementation is currently not public.
+- Define Creator Retention as document-level, unrescaled BERTScore Recall from
+  the original creator text to the final text. Use same-group
+  `Human -> Polished` and `Generated -> Humanized` pairs; self-retention for
+  unedited Human and Generated documents is exactly `1.0`.
+- Compute retention labels offline with SciBERT. Never expose the paired source
+  text to the detector at inference time.
+- Keep the existing PASTED EDU `1-BLEU4` regressors as the Editor Modification
+  branch, with polishing and humanization directions separately masked.
+- Train the group-safe four-class classifier jointly with document-level
+  retention MSE and both direction-specific EDU modification MSE losses.
+- Initialize the RACE backbone/RGCN/classifier from the no-leak baseline, the
+  two editor heads from their matching lexical checkpoints, and every new
+  residual gate at zero.

@@ -1,0 +1,14 @@
+{
+  "baseline": {
+    "42": {"accuracy": 0.9359375, "f1_macro": 0.906799062204215, "auroc_macro": 0.9839103870964493, "tpr_at_1_fpr_macro": 0.7790822881685266},
+    "2026": {"accuracy": 0.9425, "f1_macro": 0.9140460741781072, "auroc_macro": 0.9838631503799975, "tpr_at_1_fpr_macro": 0.8053496108357407},
+    "3407": {"accuracy": 0.9434375, "f1_macro": 0.9115991132223498, "auroc_macro": 0.9856178532740724, "tpr_at_1_fpr_macro": 0.8081341196052265},
+    "mean": {"accuracy": 0.940625, "f1_macro": 0.9108147498682241, "auroc_macro": 0.9844637969168396, "tpr_at_1_fpr_macro": 0.7975220062031646},
+    "sample_std": {"accuracy": 0.004086467759569409, "f1_macro": 0.0036866265122610185, "auroc_macro": 0.000999721152920704, "tpr_at_1_fpr_macro": 0.016029840085588845}
+  },
+  "dual_trace": {
+    "mean": {"accuracy": 0.940625, "f1_macro": 0.9120773277265609, "auroc_macro": 0.9820336388739396, "tpr_at_1_fpr_macro": 0.8011174647925191},
+    "sample_std": {"accuracy": 0.0014320549046736937, "f1_macro": 0.0015194360003970683, "auroc_macro": 0.0015632220266885387, "tpr_at_1_fpr_macro": 0.010571823966497869}
+  },
+  "conclusion": "Dual trace does not stably outperform the strong official-style baseline across seeds."
+}

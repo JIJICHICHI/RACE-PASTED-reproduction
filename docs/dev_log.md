@@ -277,6 +277,29 @@ HF_HOME=/home/dx/.cache/huggingface HUGGINGFACE_HUB_CACHE=/home/dx/.cache/huggin
 **预期效果**：联合模型从同一 group-safe 数据划分上的强四分类边界初始化，确保与 baseline 的差异主要来自 lexical auxiliary loss 和 residual fusion。
 **文档同步**：idea_report.md 是 | implementation.md 是 | configs/ 是
 
+### 2026-09-14 — 迭代 #8 验证：Creator/Editor smoke tests
+
+- Python syntax：`creator_retention_label_builder.py`、dataset、model、four-class trainer 全部通过 `py_compile`；`git diff --check` 通过。
+- Pair audit：train/val/test 分别解析 3503/518/994 个 edited pair，总计 5015，全部由同 split、同 `group_id` 的 Creator 解析。
+- CPU label smoke：每个 split 取 1 group，以缓存 RoBERTa、长度 64 验证 BERTScore Recall 路径，输出分数有限且位于 `[0,1]`，group overlap 为 0。该 smoke 分数不是正式 SciBERT 标签。
+- Dataset contract：retention score/mask 正确 collate 为 `[B]`。
+- Initialization smoke：强 baseline 精确迁移 216 个参数，两个 Editor checkpoint 各迁移 4 个 head 参数；输出 `logits=(1,4)`、`creator_retention_scores=(1,)`，三个 residual gate 均严格为 0。
+- Backward compatibility：旧 dual-trace 配置前向仍输出 `(1,4)`，不启用 Creator Retention，新增 gate 为 `None`。
+
+**结论**：架构与数据链路 smoke test 通过。正式 SciBERT 全量标签生成及完整训练尚未启动，以免与正在运行的 P0 强 baseline 多种子任务争用 GPU。
+
+### 2026-09-14 — 迭代 #7 结果：P0 强 RACE baseline 三种子
+
+- seed 42：accuracy 0.935938，macro-F1 0.906799，macro-AUROC 0.983910，macro TPR@1%FPR 0.779082。
+- seed 2026：accuracy 0.942500，macro-F1 0.914046，macro-AUROC 0.983863，macro TPR@1%FPR 0.805350。
+- seed 3407：accuracy 0.943438，macro-F1 0.911599，macro-AUROC 0.985618，macro TPR@1%FPR 0.808134。
+- 三种子 baseline 均值±样本标准差：accuracy 0.940625±0.004086，macro-F1 0.910815±0.003687，macro-AUROC 0.984464±0.001000，macro TPR@1%FPR 0.797522±0.016030。
+- dual trace 对应均值：accuracy 0.940625，macro-F1 0.912077，macro-AUROC 0.982034，macro TPR@1%FPR 0.801117。
+
+**结论**：dual trace 的平均 accuracy 与强 baseline 相同，macro-F1 仅高 0.001263，macro TPR@1%FPR 高 0.003595，但 macro-AUROC 低 0.002430；accuracy/F1 只在 seed 42 上胜出，AUROC 三个种子均更低。因此不能宣称稳定超过真正强的 RACE baseline。dual trace 还复用了固定 seed-42 初始化 checkpoints，并非完整端到端配对三种子。
+
+**产物**：`reports/group_safe_official_baseline_multiseed/{README.md,summary.json}`。
+
 ### 2026-09-13 13:24 — 迭代 #4：实现双痕迹四分类 residual fusion
 
 **改动原因**：单 polishing 分支改善 Polished 低误报检测，但不能监督 Humanized；独立 humanization 模型已证明第二方向可学习。
@@ -313,6 +336,41 @@ HF_HOME=/home/dx/.cache/huggingface HUGGINGFACE_HUB_CACHE=/home/dx/.cache/huggin
 - `train_pasted_race_fourclass.py`：calibration epoch 仅做校准与日志，不参与 best checkpoint/early-stop；至少完成一个 CE+MSE joint epoch 才可保存正式模型；缺类子集的 per-class AUROC 安全返回 NaN。
 **预期效果**：正式 best checkpoint 必然来自 residual fusion 已参与训练的阶段，同时 smoke 子集不再产生无意义警告。
 **文档同步**：idea_report.md 否 | implementation.md 否 | configs/ 否
+
+### 2026-09-14 — 迭代 #8：Creator Retention / Editor Modification 解耦
+
+**改动原因**：现有 dual-trace 的两个分支都监督局部编辑强度，无法区分“原始 Creator 内容保留”与“Editor 修改程度”。用户指定参考 `gyc-nii/CAS-CS-and-dual-head-detector` 的 human-involvement/BERTScore 监督思想迁移到 RACE。
+
+**参考仓库核验**：公开仓库的 Detector 代码仍为 `Coming Soon`；可复用内容是包含 `scibert_bertscore`、`token_labels`、`generated_text/source_text/prompt_text` 的多任务数据契约。因此本实现明确为监督思想迁移，不声称复刻其未公开模型。
+
+**改动内容**：
+
+- `docs/user_requirements.md`：记录 Creator Retention 定义、配对边界、离线标签与无源文本推理约束。
+- `docs/idea_report.md`：新增 Creator/Editor 解耦公式、联合目标和消融设计。
+- `docs/implementation.md`：新增数据、模型、训练及兼容性契约。
+- `utils/creator_retention_label_builder.py`：实现 uniform-weight、unrescaled SciBERT BERTScore Recall；Human/Generated 自保留为 1，Polished/Humanized 使用同组原始 Creator 作为 reference。
+- `utils/flexible_dataset.py`：加载并批处理文档级 retention score/mask/reference ID。
+- `models/flexible_model.py`：新增 sigmoid Creator Retention 回归头、retention-conditioned residual fusion 和零初始化 gate。
+- `train_pasted_race_fourclass.py`：新增 masked scalar MSE、Creator 指标/预测输出、校准阶段与联合损失接线。
+- `train_pasted_race_fourclass.py`：stratified sampler 的 generator 改为使用配置 `seed`，避免新实验写 seed 3407 但采样仍固定为 42。
+- `configs/pasted_race/PASTED_RACE_fourclass_creator_editor_joint.json`：新增强 baseline 初始化、官方优化设置的完整 Creator/Editor 实验配置。
+- `scripts/build_creator_retention_data.sh`、`scripts/train_pasted_race_creator_editor.sh`：新增数据构建与训练入口。
+- `README.md`：补充 Creator Retention 数据生成、训练命令和无源文本推理说明。
+
+**预期效果**：Creator 分支学习源内容语义保留，Editor 分支学习 EDU 局部改写强度；三个 residual gate 均从零开始，加载后保持强 RACE 决策边界不变。
+
+**文档同步**：idea_report.md 是 | implementation.md 是 | configs/ 是
+
+### 2026-09-14 — 迭代 #7：P0 强 RACE baseline 三种子控制实验
+
+**改动原因**：现有双痕迹三种子结论仅相对 seed-42/lr-2.5e-5 固定基线成立；官方 seed-3407/lr-2.9e-5 单次强基线已显示更高的 Accuracy、AUROC 和 TPR，必须补齐同等三种子控制后才能判断改进是否稳定超过强 RACE。
+**改动内容**：
+- `docs/user_requirements.md`：记录 P0 强基线多种子范围与公平比较约束。
+- `configs/pasted_race/PASTED_RACE_fourclass_baseline_official_seed42.json`：新增 seed 42、lr 2.9e-5 强基线配置。
+- `configs/pasted_race/PASTED_RACE_fourclass_baseline_official_seed2026.json`：新增 seed 2026、lr 2.9e-5 强基线配置。
+- `scripts/train_pasted_race_fourclass_baseline_official_multiseed.sh`：按顺序运行缺失的 42/2026 两组；已有 3407 结果不重复计算。
+**预期效果**：得到相同 split、架构、学习率和评估协议下的三种子 RACE baseline 均值与样本标准差，并据此重新审计双痕迹方法的稳定收益声明。
+**文档同步**：idea_report.md 否 | implementation.md 否 | configs/ 是
 
 ### 2026-09-13 — 迭代 #6 结果：官方超参数的 group-safe 四分类基线
 

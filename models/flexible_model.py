@@ -310,7 +310,49 @@ class RACEModel(nn.Module):
             self.humanization_fusion_proj = None
             self.register_parameter("humanization_residual_gamma", None)
 
-        # --- 12. Weight Initialization ---
+        # --- 12. Optional document-level Creator Retention branch ---
+        self.use_creator_retention = bool(
+            self.config.get("use_creator_retention", False)
+        )
+        self.use_creator_retention_fusion = bool(
+            self.config.get("use_creator_retention_fusion", False)
+        )
+        if self.use_creator_retention_fusion and not self.use_creator_retention:
+            raise ValueError(
+                "use_creator_retention_fusion requires use_creator_retention=true"
+            )
+        if self.use_creator_retention:
+            self.creator_retention_head = nn.Sequential(
+                nn.Linear(self.gnn_hidden_dim, self.gnn_hidden_dim),
+                nn.GELU(),
+                nn.Dropout(self.config.get("creator_retention_dropout", 0.1)),
+                nn.Linear(self.gnn_hidden_dim, 1),
+            )
+        else:
+            self.creator_retention_head = None
+        if self.use_creator_retention_fusion:
+            self.creator_retention_fusion_proj = nn.Sequential(
+                nn.Linear(2 * self.gnn_hidden_dim, self.gnn_hidden_dim),
+                nn.LayerNorm(self.gnn_hidden_dim),
+                nn.GELU(),
+                nn.Dropout(
+                    self.config.get("creator_retention_fusion_dropout", 0.1)
+                ),
+            )
+            self.creator_retention_residual_gamma = nn.Parameter(
+                torch.tensor(
+                    float(
+                        self.config.get(
+                            "creator_retention_residual_gamma_init", 0.0
+                        )
+                    )
+                )
+            )
+        else:
+            self.creator_retention_fusion_proj = None
+            self.register_parameter("creator_retention_residual_gamma", None)
+
+        # --- 13. Weight Initialization ---
         self.node_proj.apply(self._init_weights)
         self.convs.apply(self._init_weights)
         self._init_classifier(self.classifier)
@@ -335,6 +377,10 @@ class RACEModel(nn.Module):
             self.humanization_trace_head.apply(self._init_weights)
         if self.use_humanization_fusion:
             self.humanization_fusion_proj.apply(self._init_weights)
+        if self.use_creator_retention:
+            self.creator_retention_head.apply(self._init_weights)
+        if self.use_creator_retention_fusion:
+            self.creator_retention_fusion_proj.apply(self._init_weights)
 
     def _init_weights(self, m):
         """Initializes weights for Linear and LayerNorm layers using Xavier uniform."""
@@ -750,6 +796,36 @@ class RACEModel(nn.Module):
                 "humanization_residual_gamma": self.humanization_residual_gamma,
             }
 
+        creator_retention_outputs = {}
+        if self.use_creator_retention:
+            creator_retention_logits = self.creator_retention_head(
+                pooled_features
+            ).squeeze(-1)
+            creator_retention_scores = torch.sigmoid(creator_retention_logits)
+            if self.use_creator_retention_fusion:
+                retention_fusion_input = torch.cat(
+                    [
+                        pooled_features,
+                        pooled_features * creator_retention_scores.unsqueeze(-1),
+                    ],
+                    dim=-1,
+                )
+                creator_retention_fused = self.creator_retention_fusion_proj(
+                    retention_fusion_input
+                )
+                features = (
+                    features
+                    + self.creator_retention_residual_gamma
+                    * creator_retention_fused
+                )
+            creator_retention_outputs = {
+                "creator_retention_logits": creator_retention_logits,
+                "creator_retention_scores": creator_retention_scores,
+                "creator_retention_residual_gamma": (
+                    self.creator_retention_residual_gamma
+                ),
+            }
+
         # 3. Final classification.
         factorized_outputs = {}
         if self.use_factorized_ce:
@@ -789,6 +865,7 @@ class RACEModel(nn.Module):
             or self.use_factor_contrast
             or self.use_lexical_trace
             or self.use_humanization_trace
+            or self.use_creator_retention
         ):
             output = {"features": features, "logits": logits}
             output.update(local_outputs)
@@ -796,6 +873,7 @@ class RACEModel(nn.Module):
             output.update(contrast_outputs)
             output.update(lexical_outputs)
             output.update(humanization_outputs)
+            output.update(creator_retention_outputs)
             return output
         else:
             return logits
