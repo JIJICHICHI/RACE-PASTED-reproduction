@@ -56,3 +56,9 @@ conda run --no-capture-output -n race python \
   utils/aggregate_creator_editor_experiments.py \
   --results_dir results/pasted_race \
   --output_dir reports/creator_editor_p5_p6_final
+
+git add -f reports/creator_editor_p5_p6_final
+if ! git diff --cached --quiet; then
+  git commit -m "Add final Creator Editor experiment results"
+  git push origin main
+fi

@@ -775,3 +775,13 @@ HF_HOME=/home/dx/.cache/huggingface HUGGINGFACE_HUB_CACHE=/home/dx/.cache/huggin
 **文档同步**：idea_report.md 否（实验矩阵未变） | implementation.md 是 | configs 否
 
 **验证**：聚合器 `py_compile`、内存三种子 mean/sample-std 与 Markdown fixture smoke、两个队列脚本 Bash 语法、`train_pasted_race_fourclass.py` 语法及 `git diff --check` 均通过。正式聚合将在 P6 九组结果齐全后运行。
+
+### 2026-09-15 20:21 — 迭代 #15：最终报告自动发布
+
+**用户授权**：用户此前明确要求当前代码及实验结果上传至 GitHub，并再次允许推送。
+
+**改动内容**：`scripts/queue_p6_after_p5.sh` 在严格聚合成功后只 stage `reports/creator_editor_p5_p6_final/`，有差异时创建独立结果 commit 并推送 `main`。模型权重、数据、逐样本预测和运行日志均不进入该自动提交。
+
+**失败语义**：训练与本地聚合产物优先；若 GitHub 网络或凭据失败，错误保留在持久日志中，本地结果不丢失，可稍后单独重推。
+
+**文档同步**：idea_report.md 否 | implementation.md 是 | configs 否

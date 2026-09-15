@@ -1872,6 +1872,11 @@ metrics, and both applicable Editor trace metric families. Missing files or
 required classification keys make the aggregation fail instead of silently
 producing a partial table.
 
+When the user has explicitly authorized GitHub publication, the post-P6 queue
+stages only the generated final report directory, creates a dedicated results
+commit when those files changed, and pushes `main`. Model weights, datasets,
+raw prediction artifacts, and runtime logs remain local.
+
 ## End-to-End Trace Seed-Matching Addendum
 
 `train_pasted_race.py` accepts a seed override and passes the resolved seed to
