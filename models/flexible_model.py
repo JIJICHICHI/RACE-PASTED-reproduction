@@ -321,9 +321,25 @@ class RACEModel(nn.Module):
             raise ValueError(
                 "use_creator_retention_fusion requires use_creator_retention=true"
             )
+        self.creator_retention_input_mode = self.config.get(
+            "creator_retention_input_mode", "edu_root_interaction"
+        )
+        creator_input_dims = {
+            "edu": self.gnn_hidden_dim,
+            "edu_root": 2 * self.gnn_hidden_dim,
+            "edu_root_interaction": 3 * self.gnn_hidden_dim,
+        }
+        if self.creator_retention_input_mode not in creator_input_dims:
+            raise ValueError(
+                "creator_retention_input_mode must be one of "
+                f"{sorted(creator_input_dims)}, got {self.creator_retention_input_mode!r}"
+            )
         if self.use_creator_retention:
             self.creator_retention_head = nn.Sequential(
-                nn.Linear(self.gnn_hidden_dim, self.gnn_hidden_dim),
+                nn.Linear(
+                    creator_input_dims[self.creator_retention_input_mode],
+                    self.gnn_hidden_dim,
+                ),
                 nn.GELU(),
                 nn.Dropout(self.config.get("creator_retention_dropout", 0.1)),
                 nn.Linear(self.gnn_hidden_dim, 1),
@@ -332,7 +348,7 @@ class RACEModel(nn.Module):
             self.creator_retention_head = None
         if self.use_creator_retention_fusion:
             self.creator_retention_fusion_proj = nn.Sequential(
-                nn.Linear(2 * self.gnn_hidden_dim, self.gnn_hidden_dim),
+                nn.Linear(3 * self.gnn_hidden_dim, self.gnn_hidden_dim),
                 nn.LayerNorm(self.gnn_hidden_dim),
                 nn.GELU(),
                 nn.Dropout(
@@ -496,6 +512,45 @@ class RACEModel(nn.Module):
             trace_scores,
             trace_weights,
             torch.stack(lexical_representations, dim=0),
+        )
+
+    def _compute_creator_retention(
+        self, x, graph_batch, graph_list, root_node_indices
+    ):
+        """Predict one Creator Retention score per document from EDU features."""
+        document_logits = []
+        edu_scores_per_item = []
+        creator_representations = []
+        for item_idx, graph_item in enumerate(graph_list):
+            offset = graph_batch.ptr[item_idx].item()
+            root_h = x[root_node_indices[item_idx]]
+            edu_indices = getattr(graph_item, "_edu_indices", None)
+            if edu_indices:
+                edu_abs_indices = torch.tensor(
+                    edu_indices, dtype=torch.long, device=x.device
+                ) + offset
+                edu_h = x[edu_abs_indices]
+            else:
+                edu_h = root_h.unsqueeze(0)
+            root_expand = root_h.unsqueeze(0).expand_as(edu_h)
+            if self.creator_retention_input_mode == "edu":
+                head_input = edu_h
+            elif self.creator_retention_input_mode == "edu_root":
+                head_input = torch.cat([edu_h, root_expand], dim=-1)
+            else:
+                head_input = torch.cat(
+                    [edu_h, root_expand, edu_h * root_expand], dim=-1
+                )
+            edu_logits = self.creator_retention_head(head_input).squeeze(-1)
+            document_logits.append(edu_logits.mean())
+            edu_scores = torch.sigmoid(edu_logits)
+            edu_scores_per_item.append(edu_scores)
+            weights = edu_scores / edu_scores.sum().clamp_min(1e-8)
+            creator_representations.append((weights.unsqueeze(-1) * edu_h).sum(0))
+        return (
+            torch.stack(document_logits),
+            edu_scores_per_item,
+            torch.stack(creator_representations),
         )
 
     def _compute_editor_branch(self, edu_features_per_item):
@@ -798,15 +853,20 @@ class RACEModel(nn.Module):
 
         creator_retention_outputs = {}
         if self.use_creator_retention:
-            creator_retention_logits = self.creator_retention_head(
-                pooled_features
-            ).squeeze(-1)
+            (
+                creator_retention_logits,
+                creator_retention_edu_scores,
+                z_creator_retention,
+            ) = self._compute_creator_retention(
+                x, graph_batch, graph_list, root_node_indices
+            )
             creator_retention_scores = torch.sigmoid(creator_retention_logits)
             if self.use_creator_retention_fusion:
                 retention_fusion_input = torch.cat(
                     [
                         pooled_features,
-                        pooled_features * creator_retention_scores.unsqueeze(-1),
+                        z_creator_retention,
+                        pooled_features * z_creator_retention,
                     ],
                     dim=-1,
                 )
@@ -821,6 +881,8 @@ class RACEModel(nn.Module):
             creator_retention_outputs = {
                 "creator_retention_logits": creator_retention_logits,
                 "creator_retention_scores": creator_retention_scores,
+                "creator_retention_edu_scores": creator_retention_edu_scores,
+                "z_creator_retention": z_creator_retention,
                 "creator_retention_residual_gamma": (
                     self.creator_retention_residual_gamma
                 ),

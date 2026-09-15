@@ -194,9 +194,11 @@ def evaluate(
     return metrics
 
 
-def make_loader(dataset, batch_size: int, shuffle: bool, workers: int) -> DataLoader:
+def make_loader(
+    dataset, batch_size: int, shuffle: bool, workers: int, seed: int = 42
+) -> DataLoader:
     generator = torch.Generator()
-    generator.manual_seed(42)
+    generator.manual_seed(seed)
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -217,6 +219,7 @@ def main() -> None:
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--data_dir")
     parser.add_argument("--output_dir")
+    parser.add_argument("--seed", type=int)
     parser.add_argument("--eval_only", action="store_true")
     args = parser.parse_args()
 
@@ -230,6 +233,8 @@ def main() -> None:
         config["test_file"] = os.path.join(args.data_dir, "test_graph.jsonl")
     if args.output_dir is not None:
         config["output_dir"] = args.output_dir
+    if args.seed is not None:
+        config["seed"] = args.seed
 
     logging.basicConfig(
         level=logging.INFO,
@@ -264,9 +269,15 @@ def main() -> None:
     test_dataset = limit_dataset(test_dataset, args.max_eval_samples, seed, False)
 
     workers = int(config.get("num_workers", 0))
-    train_loader = make_loader(train_dataset, int(config["batch_size"]), True, workers)
-    val_loader = make_loader(val_dataset, int(config["eval_batch_size"]), False, workers)
-    test_loader = make_loader(test_dataset, int(config["eval_batch_size"]), False, workers)
+    train_loader = make_loader(
+        train_dataset, int(config["batch_size"]), True, workers, seed
+    )
+    val_loader = make_loader(
+        val_dataset, int(config["eval_batch_size"]), False, workers, seed
+    )
+    test_loader = make_loader(
+        test_dataset, int(config["eval_batch_size"]), False, workers, seed
+    )
 
     metadata = get_metadata_from_file(config["relation_table"], model_config)
     model = RACEModel(

@@ -196,3 +196,79 @@ and all three learned residual gates. Required ablations are Creator auxiliary
 loss without Creator fusion, Creator fusion without Editor fusion, and the full
 model. Retention labels must record model name, unrescaled setting, direction,
 and reference ID so their provenance is auditable.
+
+## Part 3 — Official-style Trace Stability Control
+
+To remove training-recipe confounds from the earlier single/dual results, run
+both trace variants with seeds 42, 2026, and 3407 under the exact strong RACE
+outer-loop recipe: four-class CE plus SupCon (`temperature=0.07`), exact
+stratified batches, learning rate `2.9e-5`, batch size 16 for train/evaluation,
+20 maximum epochs, linear warmup 0.1, weight decay 0.01, gradient clipping 1.0,
+patience 5, and validation macro-F1 checkpoint selection. Each run loads the
+strong no-leak baseline checkpoint trained with the same seed.
+
+The only non-baseline objectives are intrinsic to the compared methods:
+single trace adds `0.2 L_polish`; dual trace adds
+`0.2 L_polish + 0.2 L_humanize`. All epochs use the joint objective and trace
+fusion is available from epoch 0, with zero-initialized gates preserving the
+baseline logits at initialization. Compare per-seed differences and three-seed
+mean ± sample standard deviation; do not call a gain stable unless it appears
+across seeds rather than only in the aggregate mean.
+
+## Part 3 — Staged Creator-Retention Signal Validation
+
+After the official single/dual trace controls finish, validate Creator
+Retention before training or fusing a Creator branch. P2 contains only genuine
+same-group edited pairs: `Human -> Polished` and
+`Generated -> Humanized`. Unedited self-pairs are excluded so an artificial
+target of one cannot create a trivial class shortcut.
+
+For each edited document, compare unrescaled SciBERT contextual-token recall
+with the mean of its valid EDU `1-BLEU4` Editor Modification targets. Report
+Pearson and Spearman correlations separately for the two editing directions,
+as well as distributions overall and within Arxiv, Essay, News, and Writing.
+Pair counts, missing targets, non-finite values, and group provenance are part
+of the audit. A correlation close to negative one is evidence that the signal
+is largely redundant; a materially weaker relationship supports proceeding.
+
+P3 tests whether retention is predictable from final text alone and compares
+`h_i`, `[h_i; h_root]`, and `[h_i; h_root; h_i * h_root]` using MSE, Pearson,
+and Spearman. P2 non-redundancy and P3 learnability remain interpretation
+criteria, but are no longer execution gates: the complete P3–P6 matrix is run
+so weak or redundant signals can be documented rather than hidden by early
+termination.
+
+Every newly trained condition uses seeds 42, 2026, and 3407. P3 therefore has
+nine runs. Its matching-seed strong RACE checkpoint initializes the structural
+encoder/RGCN, but its objective is Creator MSE on edited final texts only and
+the primary checkpoint criterion is minimum validation MSE. The strongest P3
+input by three-seed validation performance initializes the Creator head for
+P5.
+
+P5 runs three full Creator+Editor models under the official RACE outer-loop
+contract. P6 compares RACE, Creator-only, Editor-only, and Creator+Editor and
+adds (i) Creator supervision without Creator fusion and (ii) full extra
+structure with all continuous-loss lambdas set to zero. Existing P1, P4, and
+P5 cells are reused, leaving nine new P6 runs rather than retraining equivalent
+models. All classification conditions report per-seed results and mean ±
+sample standard deviation.
+
+## Part 3 — End-to-End Seed-Matched Trace Control
+
+The first official-style stability table varied the strong RACE initialization
+and joint-training randomness while fixing both trace-only heads to seed 42.
+To measure the complete pipeline under one optimizer contract, independently
+retrain polishing and humanization trace heads for all three seeds using the
+identical group-safe direction-specific datasets and all applicable strong-RACE
+settings, including learning rate `2.9e-5`, batch size 16, 20 epochs, warmup
+0.1, weight decay 0.01, gradient clipping 1.0, and patience 5. The old seed-42
+trace heads at `2.5e-5` remain historical controls only.
+
+Then rerun single and dual joint models for all three seeds. For each
+seed `s`, the RACE backbone/classifier, trace head or heads, stratified sampler,
+dropout, and joint optimization all use `s`. The joint phase retains the exact
+official RACE outer loop and method-specific MSE weights used in the earlier
+control. Results are stored separately and compared against both the paired
+strong baseline and the
+fixed-trace-initialization table, preventing the two stability claims from
+being conflated.

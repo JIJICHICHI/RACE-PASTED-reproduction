@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -15,13 +14,15 @@ import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW
-from torch.utils.data import DataLoader, SequentialSampler, Subset, WeightedRandomSampler
+from torch.utils.data import DataLoader, SequentialSampler, Subset
 from transformers import get_linear_schedule_with_warmup
 
 from models.flexible_model import RACEModel
+from models.supcon_loss import SupConLoss
 from train import get_metadata_from_file
 from train_pasted_race import calculate_metrics, masked_mse, set_seed
 from utils.flexible_dataset import FlexibleGraphDataset
+from utils.custom_sampler import StratifiedBatchSampler
 from utils.metrics import compute_classification_metrics
 
 
@@ -62,12 +63,15 @@ def make_loader(
     seed: int = 42,
 ) -> DataLoader:
     if stratified:
-        labels = [int(dataset[index]["label"].item()) for index in range(len(dataset))]
-        counts = Counter(labels)
-        weights = torch.tensor([1.0 / counts[label] for label in labels], dtype=torch.double)
-        sampler = WeightedRandomSampler(
-            weights, num_samples=len(weights), replacement=True,
-            generator=torch.Generator().manual_seed(seed),
+        batch_sampler = StratifiedBatchSampler(
+            dataset, batch_size=batch_size, shuffle=True
+        )
+        return DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            num_workers=workers,
+            pin_memory=torch.cuda.is_available(),
+            collate_fn=FlexibleGraphDataset.collate_fn,
         )
     else:
         sampler = SequentialSampler(dataset)
@@ -120,6 +124,23 @@ def _load_lexical_head(
         mapped_keys.append(target_key)
     model.load_state_dict(target)
     return {"checkpoint": checkpoint_path, "transferred_keys": mapped_keys}
+
+
+def _load_creator_head(model: RACEModel, checkpoint_path: str) -> dict[str, Any]:
+    """Load only the P3 Creator Retention head into a joint model."""
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    source = checkpoint["model_state_dict"]
+    target = model.state_dict()
+    prefix = "creator_retention_head."
+    source_keys = [key for key in source if key.startswith(prefix)]
+    if not source_keys:
+        raise ValueError("Creator checkpoint contains no creator_retention_head parameters")
+    for key in source_keys:
+        if key not in target or target[key].shape != source[key].shape:
+            raise ValueError(f"Incompatible Creator parameter: {key}")
+        target[key] = source[key]
+    model.load_state_dict(target)
+    return {"checkpoint": checkpoint_path, "transferred_keys": source_keys}
 
 
 def _to_builtin(value):
@@ -343,7 +364,13 @@ def main() -> None:
     parser.add_argument("--data_dir")
     parser.add_argument("--output_dir")
     parser.add_argument("--baseline_checkpoint")
+    parser.add_argument("--lexical_checkpoint")
     parser.add_argument("--humanization_checkpoint")
+    parser.add_argument("--creator_checkpoint")
+    parser.add_argument(
+        "--creator_input_mode",
+        choices=["edu", "edu_root", "edu_root_interaction"],
+    )
     parser.add_argument("--seed", type=int)
     parser.add_argument("--max_train_samples", type=int)
     parser.add_argument("--max_eval_samples", type=int)
@@ -362,8 +389,14 @@ def main() -> None:
         config["seed"] = args.seed
     if args.baseline_checkpoint:
         config["baseline_checkpoint"] = args.baseline_checkpoint
+    if args.lexical_checkpoint:
+        config["lexical_checkpoint"] = args.lexical_checkpoint
     if args.humanization_checkpoint:
         config["humanization_checkpoint"] = args.humanization_checkpoint
+    if args.creator_checkpoint:
+        config["creator_checkpoint"] = args.creator_checkpoint
+    if args.creator_input_mode:
+        config["graph"]["creator_retention_input_mode"] = args.creator_input_mode
     if args.epochs is not None:
         config["num_epochs"] = args.epochs
 
@@ -424,6 +457,9 @@ def main() -> None:
             config["humanization_checkpoint"],
             target_prefix="humanization_trace_head.",
         )
+    creator_report = None
+    if config.get("creator_checkpoint"):
+        creator_report = _load_creator_head(model, config["creator_checkpoint"])
     model.to(device)
     if model.lexical_residual_gamma is None or model.lexical_residual_gamma.item() != 0.0:
         raise ValueError("Four-class residual gamma must initialize to exactly zero")
@@ -443,6 +479,7 @@ def main() -> None:
                 "baseline": baseline_report,
                 "lexical": lexical_report,
                 "humanization": humanization_report,
+                "creator": creator_report,
             },
             report_file, ensure_ascii=False, indent=2,
         )
@@ -490,6 +527,10 @@ def main() -> None:
         num_warmup_steps=int(total_steps * float(config.get("warmup_ratio", 0.1))),
         num_training_steps=total_steps,
     )
+    use_supcon = bool(config.get("use_supcon", False))
+    supcon_criterion = SupConLoss(
+        temperature=float(config.get("supcon_temperature", 0.07))
+    )
 
     best_f1 = -float("inf")
     patience = 0
@@ -505,6 +546,7 @@ def main() -> None:
             "trace": 0.0,
             "humanization": 0.0,
             "creator_retention": 0.0,
+            "supcon": 0.0,
         }
         for step, batch in enumerate(loaders["train"], start=1):
             optimizer.zero_grad(set_to_none=True)
@@ -528,11 +570,20 @@ def main() -> None:
             ) if "creator_retention_scores" in output else torch.zeros((), device=device)
             if calibration:
                 ce_loss = torch.zeros((), device=device)
+                supcon_loss = torch.zeros((), device=device)
                 loss = trace_loss + humanization_loss + creator_loss
             else:
                 ce_loss = F.cross_entropy(output["logits"], batch["labels"].to(device))
+                if use_supcon:
+                    normalized_features = F.normalize(output["features"], p=2, dim=1)
+                    supcon_loss = supcon_criterion(
+                        normalized_features, batch["labels"].to(device)
+                    )
+                else:
+                    supcon_loss = torch.zeros((), device=device)
                 loss = (
                     ce_loss
+                    + supcon_loss
                     + float(config.get("lexical_loss_weight", 0.2)) * trace_loss
                     + float(config.get("humanization_loss_weight", 0.2))
                     * humanization_loss
@@ -548,11 +599,13 @@ def main() -> None:
             running["trace"] += float(trace_loss.item())
             running["humanization"] += float(humanization_loss.item())
             running["creator_retention"] += float(creator_loss.item())
+            running["supcon"] += float(supcon_loss.item())
             if step % int(config.get("logging_steps", 25)) == 0:
                 LOGGER.info(
-                    "epoch=%d step=%d/%d loss=%.6f ce=%.6f trace=%.6f humanization=%.6f creator=%.6f gamma_p=%.6f gamma_h=%.6f gamma_c=%.6f",
+                    "epoch=%d step=%d/%d loss=%.6f ce=%.6f supcon=%.6f trace=%.6f humanization=%.6f creator=%.6f gamma_p=%.6f gamma_h=%.6f gamma_c=%.6f",
                     epoch + 1, step, len(loaders["train"]),
                     running["loss"] / step, running["ce"] / step,
+                    running["supcon"] / step,
                     running["trace"] / step,
                     running["humanization"] / step,
                     running["creator_retention"] / step,

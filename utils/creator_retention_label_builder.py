@@ -118,6 +118,7 @@ def build_split(
     device: torch.device,
     max_length: int,
     batch_size: int,
+    edited_pairs_only: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     pairs = resolve_pairs(items)
     scores_by_id: dict[str, tuple[float, str, str]] = {}
@@ -145,6 +146,8 @@ def build_split(
     for item in items:
         label = str(item.get("label"))
         if label not in ALL_LABELS:
+            continue
+        if edited_pairs_only and label in SOURCE_LABELS:
             continue
         new_item = dict(item)
         if label in SOURCE_LABELS:
@@ -185,6 +188,11 @@ def main() -> None:
     parser.add_argument("--max_length", type=int, default=512)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--max_groups", type=int)
+    parser.add_argument(
+        "--edited_pairs_only",
+        action="store_true",
+        help="Write only Polished/Humanized edited targets; omit self-retention sources.",
+    )
     args = parser.parse_args()
 
     if len(args.inputs) != 3:
@@ -219,7 +227,13 @@ def main() -> None:
     }
     for split in split_names:
         built, split_stats = build_split(
-            split_items[split], tokenizer, model, device, args.max_length, args.batch_size
+            split_items[split],
+            tokenizer,
+            model,
+            device,
+            args.max_length,
+            args.batch_size,
+            edited_pairs_only=args.edited_pairs_only,
         )
         write_jsonl(built, str(Path(args.output_dir) / f"{split}_graph.jsonl"))
         stats["splits"][split] = split_stats

@@ -277,6 +277,34 @@ HF_HOME=/home/dx/.cache/huggingface HUGGINGFACE_HUB_CACHE=/home/dx/.cache/huggin
 **预期效果**：联合模型从同一 group-safe 数据划分上的强四分类边界初始化，确保与 baseline 的差异主要来自 lexical auxiliary loss 和 residual fusion。
 **文档同步**：idea_report.md 是 | implementation.md 是 | configs/ 是
 
+### 2026-09-14 23:05 — 迭代 #10：固定 Creator Retention 后续实验队列
+
+**改动原因**：用户要求按“先验证信号，再接模型”的顺序执行，并跳过已完成的公平划分和强基线实验。
+
+**改动内容**：
+
+- `docs/user_requirements.md`：记录 P2–P6 的严格执行顺序、进入下一阶段的信号有效性条件，以及必做的 `lambda=0` 结构控制。
+- 明确 P2 只分析真实编辑 pair，不将 Human/Generated 自保留样本设为 1；必须分方向报告 Creator Retention 与 `1-BLEU4` 的 Pearson/Spearman 及领域分布。
+- 当前正式单/双痕迹六组训练继续独占 GPU；本轮只固化后续队列，不启动 Creator 计算或训练。
+
+**预期效果**：先判断 Creator Retention 是否提供独立于 Editor Modification 的信息，再决定是否投入四分类联合训练，避免无法归因的一次性堆叠。
+
+**文档同步**：idea_report.md 已有 Creator/Editor 设计 | implementation.md 已有实现说明 | user_requirements.md 是
+
+### 2026-09-14 22:55 — 迭代 #9 验证：官方设置 trace smoke tests
+
+- `py_compile`、两个 JSON config 解析与 `git diff --check` 通过。
+- 官方 `StratifiedBatchSampler` 检查：batch size 16，首批四类各 4 条，每轮 700 batches，与强 baseline 一致。
+- 单痕迹 GPU smoke：CE、SupCon、polishing MSE 均为有限值并共同反传；第 1 步后 residual gamma 从 0 变为非零；checkpoint 重载和测试输出通过。
+- 双痕迹 GPU smoke：CE、SupCon、polishing/humanization MSE 均为有限值并共同反传；两个 residual gamma 均从 0 变为非零；checkpoint 重载和双分支预测输出通过。
+- smoke 子集只有 64/32 条，指标不用于模型结论。
+
+**结论**：六组正式训练可以启动。
+
+### 2026-09-14 22:56 — 迭代 #9 启动修正：固定 Hugging Face cache
+
+首次正式启动在构建第一组 dataset tokenizer 时退出，尚未进入训练。原因是脚本继承了外层已有但不包含 RoBERTa 的 `HF_HOME`，同时 offline mode 禁止回退网络。现已改为与强 baseline 启动脚本相同的绝对 cache 路径 `/home/dx/.cache/huggingface`；失败目录没有 `metrics.json`，重启脚本会安全覆盖其 `resolved_config.json` 并正常执行该组。
+
 ### 2026-09-14 — 迭代 #8 验证：Creator/Editor smoke tests
 
 - Python syntax：`creator_retention_label_builder.py`、dataset、model、four-class trainer 全部通过 `py_compile`；`git diff --check` 通过。
@@ -565,3 +593,149 @@ HF_HOME=/home/dx/.cache/huggingface HUGGINGFACE_HUB_CACHE=/home/dx/.cache/huggin
 - `train_pasted_race_fourclass.py`：新增命令行 `--seed` 覆盖，允许同一配置安全写入独立种子目录。
 **预期效果**：获得三个联合融合训练种子的可比结果；本轮只测联合阶段随机性，不重新训练 seed-42 baseline 与两个独立 lexical checkpoint。
 **文档同步**：idea_report.md 否 | implementation.md 否 | configs/ 否
+
+### 2026-09-14 22:45 — 迭代 #9：官方设置单/双痕迹三种子控制
+
+**改动原因**：此前单/双痕迹实验使用 `lr=2.0e-5`、12 epochs、patience 4、固定 seed-42 baseline 初始化，且联合训练器没有官方 RACE 的 SupCon，因此不能与新强 baseline 严格比较。
+
+**改动内容**：
+
+- `docs/user_requirements.md`、`docs/idea_report.md`、`docs/implementation.md`：明确官方 outer-loop 对齐与逐 seed baseline 初始化协议。
+- `train_pasted_race_fourclass.py`：训练 sampler 改为与官方 `train.py` 相同的 `StratifiedBatchSampler`；可选加入四分类 `SupConLoss(temperature=0.07)`，联合目标为官方 CE+SupCon 再加方法特有 trace MSE。
+- `configs/pasted_race/PASTED_RACE_fourclass_single_official.json`：单痕迹官方设置 canonical config。
+- `configs/pasted_race/PASTED_RACE_fourclass_dual_official.json`：双痕迹官方设置 canonical config。
+- `scripts/train_pasted_race_trace_official_multiseed.sh`：按 single/dual × 42/2026/3407 顺序运行六组，并为每个 seed 选择同 seed 强 baseline checkpoint。
+- `scripts/train_pasted_race_trace_official_multiseed.sh`：显式复用现有 Hugging Face cache，避免长实验启动时重复下载 backbone。
+- `scripts/train_pasted_race_trace_official_multiseed.sh`：正式六组运行启用 offline mode，固定使用已缓存的同一 RoBERTa revision，避免运行中网络波动或 revision 漂移。
+
+**公平性设置**：`lr=2.9e-5`、train/eval batch 16、20 epochs、linear warmup 0.1、weight decay 0.01、clip 1.0、patience 5、validation macro-F1 选模、SupCon temperature 0.07；calibration epochs=0、fusion warmup=0，所有20轮均为联合训练。方法特有 MSE 权重保持 0.2。
+
+**已知边界**：两个独立 lexical-only checkpoint 只有 seed 42，因此六组实验均复用对应方向的 seed-42 trace head；共享 RACE backbone/RGCN/classifier 则严格逐 seed 配对。
+
+**预期效果**：消除旧实验训练配方和固定 baseline 初始化造成的混杂，直接判断单/双痕迹是否稳定超过强 RACE。
+
+**文档同步**：idea_report.md 是 | implementation.md 是 | configs/ 是
+
+### 2026-09-14 23:28 — 迭代 #10 验证与启动：P2 Creator Retention 后续队列
+
+- `utils/creator_retention_label_builder.py`：新增 `--edited_pairs_only`，P2 产物只保留 Polished/Humanized 真实编辑 pair，默认全类行为保持不变。
+- `utils/analyze_creator_retention_signal.py`：新增分方向 Pearson/Spearman、数值摘要、四领域统计、行级 CSV 和分布图输出。Editor Modification 文档级标量明确为有效 EDU `1-BLEU4` 的均值。
+- `scripts/run_creator_retention_signal_analysis.sh`、`scripts/queue_creator_signal_after_trace_controls.sh`：新增 P2 执行入口和六组控制结果门禁。
+- 验证：Python 语法、Bash 语法、相关性函数 smoke test 与 `git diff --check` 全部通过。
+- 执行：持久队列会话 `18473` 已启动；目前检测到 1/6 组完成，其余结果出现前不会加载 SciBERT。P2 完成后停止，不自动越过信号有效性判断进入 P3。
+
+**文档同步**：idea_report.md 是 | implementation.md 是 | user_requirements.md 是
+
+### 2026-09-15 00:16 — 迭代 #11：扩展为 Creator Retention 完整实验矩阵
+
+**改动原因**：用户明确要求在当前官方设置单/双痕迹控制补全后，继续完成 Creator Retention 全部实验，不因 P2 相关性过高或 P3 可学习性偏弱而提前停止。
+
+**实验矩阵**：
+
+- P2：真实编辑 pair 的 SciBERT Creator Retention 分布、分域统计及与 Editor Modification 的 Pearson/Spearman，无随机种子。
+- P3：`h_i`、`[h_i;h_root]`、`[h_i;h_root;h_i*h_root]` 三种输入 × seeds `42/2026/3407`，共 9 组 Creator-only regression。
+- P5：最佳 P3 输入的 Creator+Editor 联合模型 × 3 seeds，共 3 组。
+- P6：新训练 `RACE+Creator`、Creator loss/no fusion、全结构 `lambda=0` 各 3 seeds，共 9 组；RACE、Editor-only 和完整 Creator+Editor 分别复用 P1、P4、P5。
+
+**公平性**：所有四分类条件沿用强 RACE 的 group-safe split、官方 CE+SupCon outer-loop 设置和逐 seed baseline 初始化；训练串行使用单 GPU。P3 是任务特定的 MSE-only 回归，按 validation MSE 选模并用 Spearman 破平。
+
+**当前执行边界**：已运行的会话 `18473` 会自动完成 P2；P3–P6 的独立 runner 将在不改动当前 trace trainer 的前提下实现和 smoke，然后接续执行。
+
+**文档同步**：idea_report.md 是 | implementation.md 是 | user_requirements.md 是
+
+### 2026-09-15 00:55 — 迭代 #11 结果：官方设置 trace 控制与 P2 信号分析
+
+**官方设置三种子均值 ± 样本标准差**：
+
+| 方法 | Accuracy | Macro-F1 | Macro-AUROC | Macro TPR@1%FPR |
+|---|---:|---:|---:|---:|
+| Strong RACE | 0.940625 ± 0.004086 | 0.910815 ± 0.003687 | 0.984464 ± 0.001000 | 0.797522 ± 0.016030 |
+| Single trace | 0.944271 ± 0.007758 | 0.916606 ± 0.007611 | 0.984127 ± 0.000693 | 0.824575 ± 0.010700 |
+| Dual trace | 0.943125 ± 0.007973 | 0.911680 ± 0.013869 | 0.984775 ± 0.001281 | 0.818952 ± 0.005386 |
+
+**配对差值诊断**：Single trace 平均相对强基线的 Accuracy/Macro-F1/Macro-TPR 分别为 +0.003646/+0.005792/+0.027053，但 seed 3407 的 Accuracy/F1 为负；Dual trace 对应为 +0.002500/+0.000865/+0.021430，seed 3407 Macro-F1 下降 0.015789。因此低 FPR 收益更一致，但不能声称分类 Macro-F1 稳定提升，双痕迹尤其受 seed 3407 影响。
+
+**P2 数据审计**：共 5,015 个真实编辑 pair，H→P 4,000，G→Hu 1,015；train/val/test 为 3,503/518/994，group overlap 全为 0，未加入自保留为 1 的样本。
+
+**P2 主结果**：
+
+- H→P：Creator Retention `0.781899 ± 0.099840`，Editor Modification `0.729806 ± 0.245705`，Pearson `-0.823426`，Spearman `-0.872743`。
+- G→Hu：Creator Retention `0.779110 ± 0.075592`，Editor Modification `0.813736 ± 0.142824`，Pearson `-0.731668`，Spearman `-0.796033`。
+- 分域相关范围：H→P Pearson `[-0.846190,-0.743298]`，G→Hu Pearson `[-0.828989,-0.696860]`。
+
+**结论**：两个信号具有较强负相关，尤其 H→P，说明 Creator Retention 不是完全独立轴；但相关性仍未达到接近 `-1`，且 G→Hu 只为中高强度，仍存在可验证的非冗余信息。根据用户要求，继续 P3–P6，不以此为停止条件。
+
+**产物**：`results/pasted_race/creator_retention_signal/signal_analysis.json`、`edited_pair_signals.csv`、`signal_distributions.png`、`domain_distributions.png`。
+
+### 2026-09-15 10:00 — 迭代 #12：逐种子端到端 trace 补训
+
+**改动原因**：首轮官方 outer-loop 对照在联合阶段使用 42/2026/3407，但所有种子的独立 polishing/humanization trace head 均复用 seed 42，不能表示完整 pipeline 的多种子稳定性。
+
+**改动内容**：
+
+- `docs/user_requirements.md`、`docs/idea_report.md`、`docs/implementation.md`：固定四个 trace-only 补训和四个 paired joint 重跑的公平性、初始化与隔离产物契约。
+- `train_pasted_race.py`：新增 `--seed` 覆盖，并将 DataLoader shuffle generator 从硬编码 42 改为 resolved run seed。
+- `train_pasted_race_fourclass.py`：新增 `--lexical_checkpoint` 覆盖，与已有 baseline/humanization 覆盖组成可审计的逐 seed 初始化入口。
+- `scripts/train_pasted_race_trace_end_to_end_multiseed.sh`：串行执行 polishing × 2026/3407、humanization × 2026/3407，再执行 single/dual × 2026/3407 paired joint；完成产物可安全跳过。
+
+**设置边界**：trace-only 没有 RACE 官方配方，因此严格保留现有 seed-42 canonical trace-only 配方（`lr=2.5e-5`、batch 16、10 epochs、patience 3），只改 seed；四分类 joint 仍使用官方 RACE CE+SupCon outer-loop。
+
+**Smoke 验证**：两个独立 trace 和单/双 joint 共四条 seed-2026 子集路径全部通过；每条均产生 finite loss、`metrics.json`和 `best_model.pt`。Dual 初始化审计显示 baseline 从 seed-2026 迁移 216 个参数，polishing/humanization 分别从对应 seed-2026 smoke checkpoint 迁移 4 个 head 参数，两个 gate 从 0 开始并在联合步更新。
+
+**预期效果**：得到 `RACE seed=s + trace seed=s + joint seed=s` 的完整三种子比较，并将 trace 预训随机性与首轮固定 trace 初始化结论分开报告。
+
+**文档同步**：idea_report.md 是 | implementation.md 是 | user_requirements.md 是 | configs 复用 canonical
+
+### 2026-09-15 10:03 — 迭代 #12 修正与启动：trace-only 学习率统一为官方 RACE
+
+**用户修正**：完整 pipeline 要求学习率与强 RACE 保持一致。因此不再复用 `lr=2.5e-5` 的旧 seed-42 trace checkpoint，而是对 polishing/humanization 两个方向全部重训 seeds `42/2026/3407`。
+
+**统一设置**：`lr=2.9e-5`、train/eval batch 16、20 epochs、warmup 0.1、weight decay 0.01、clip 1.0、patience 5。Trace-only 任务仍为 masked MSE，因没有四分类标签，CE/SupCon/Macro-F1 不适用。
+
+**改动与产物**：新增 `PASTED_RACE_lexical_official.json`、`PASTED_RACE_humanization_lexical_official.json`；串行入口改为 6 个 official-optimized trace-only + 6 个 same-seed joint，输出到 `*_official_seed*` 和 `fourclass_*_official_e2e_seed*`，不覆盖旧表。
+
+**验证**：新 `2.9e-5` polishing trace seed-42 GPU smoke 通过，loss/metrics/checkpoint 均有限；JSON、Bash、Python 语法和 `git diff --check` 通过。
+
+**执行**：正式 12 组串行任务已于 10:03 启动，会话 ID `66613`，当前第 1/12 组为 polishing trace seed 42。Creator Retention P3–P6 顺延到本轮完成后。
+
+**文档同步**：idea_report.md 是 | implementation.md 是 | user_requirements.md 是 | configs 是
+
+### 2026-09-15 12:35 — 迭代 #12 结果：逐种子端到端 trace 补训完成
+
+**完成性审计**：12/12 个正式任务均正常结束并生成 `metrics.json` 与 `best_model.pt`：polishing/humanization trace-only 各 3 seeds，same-seed single/dual 四分类联合模型各 3 seeds。串行会话 `66613` 以退出码 0 结束。
+
+**端到端配对三种子均值 ± 样本标准差**：
+
+| 方法 | Accuracy | Macro-F1 | Macro-AUROC | Macro TPR@1%FPR |
+|---|---:|---:|---:|---:|
+| Strong RACE | 0.940625 ± 0.004086 | 0.910815 ± 0.003687 | 0.984464 ± 0.001000 | 0.797522 ± 0.016030 |
+| Single trace, same-seed E2E | 0.945729 ± 0.006046 | 0.917933 ± 0.005956 | 0.984412 ± 0.000490 | 0.825848 ± 0.011592 |
+| Dual trace, same-seed E2E | 0.943229 ± 0.008819 | 0.914408 ± 0.009454 | 0.984484 ± 0.000601 | 0.824065 ± 0.005164 |
+
+**相对 Strong RACE 的均值变化**：Single 为 Accuracy `+0.005104`、Macro-F1 `+0.007118`、Macro-AUROC `-0.000052`、Macro TPR `+0.028326`；Dual 为 `+0.002604`、`+0.003594`、`+0.000021`、`+0.026543`。
+
+**稳定性边界**：Single 的 Macro-F1 在 seed 42/2026/3407 分别为 `0.922064/0.920629/0.911106`，三者均高于各自 Strong RACE；Accuracy 在 seed 3407 下降。Dual 的 Macro-F1 为 `0.921729/0.917761/0.903735`，seed 3407 下降。因此端到端配对后，Single 的 Macro-F1 和低 FPR 收益最有说服力；Dual 仍不能称为所有种子稳定提升。
+
+**Trace-only 测试 AUROC**：polishing seeds 42/2026/3407 为 `0.991074/0.990336/0.990865`；humanization 为 `0.956739/0.953156/0.952588`。Humanization 痕迹显著更难，但三个种子结果一致。
+
+**下一步**：按既定 P3–P6 队列进入 Creator Retention 回归、输入消融、Creator/Editor 联合与 lambda/fusion 消融。
+
+### 2026-09-15 14:26 — 迭代 #13：P3 Creator Retention 实现与启动
+
+**实现**：新增 `train_creator_retention.py`、P3 canonical config 和三输入 × 三种子串行 launcher。模型 Creator head 现支持 `edu`、`edu_root`、`edu_root_interaction`；每个 EDU 产生 logit，文档 logit 取有效 EDU 算术均值后 sigmoid。P3 只在真实编辑最终文本上训练 Creator MSE，按 validation MSE 选模、Spearman 破平，并从同 seed Strong RACE 初始化结构编码器。
+
+**缓存修正**：主机旧 `HF_HUB_CACHE/TRANSFORMERS_CACHE` 指向已不存在的外置路径；P3 launcher 显式固定到 `/home/dx/.cache/huggingface/hub`，全程离线使用现有 RoBERTa snapshot。
+
+**验证**：三个输入模式分别完成 GPU smoke；均成功加载 54 类关系和同 seed baseline，产生 finite MSE/相关系数、`best_model.pt`、`metrics.json`。Python/JSON/Bash 语法与 `git diff --check` 通过。
+
+**执行**：开始串行运行 P3 九组正式实验；完成后按三种子 validation MSE 选择输入模式，再进入 P5/P6。
+
+### 2026-09-15 15:57 — 迭代 #13 结果与 P5 自动接续
+
+**P3 完成性**：9/9 正式任务完成。按三种子平均 validation MSE 自动选择 `edu` (`h_i`)：`edu=0.004445`、`edu_root=0.004761`、`edu_root_interaction=0.004606`。对应三种子测试均值为：`edu` MSE/Pearson/Spearman `0.004049/0.733611/0.723041`，优于其余两种输入。
+
+**P5 实现**：四分类 trainer 新增 P3 Creator head 的形状校验加载和 CLI 覆盖；新增 Creator 标签无重算合并器、official P5 config 和 P3→P5 自动选择/接续队列。合并数据 train/val/test 为 11,200/1,600/3,200，group overlap 为 0，Creator target 全覆盖。
+
+**验证与空间处理**：8 条样本 smoke 因官方分层 sampler 无完整 batch，仅验证前向，不计作训练验证；随后 200 条有效 smoke 产生非零训练 loss，三个 residual gate 均从 0 更新。首次保存因磁盘满失败；删除本轮临时 smoke 目录，并在保留 metrics/history/predictions 的前提下删除 P3 两个落选模式的 6 个可重训 checkpoint，空间从 0 恢复到 5.3 GB。
+
+**执行**：P5 seed 42 已启动；完成后自动运行 seeds 2026/3407。选择报告为 `results/pasted_race/creator_retention_p3_selection.json`。

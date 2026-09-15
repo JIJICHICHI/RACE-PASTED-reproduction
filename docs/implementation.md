@@ -1764,3 +1764,97 @@ Validation contract:
 - no group overlap and every edited item resolves to a same-group source;
 - all three residual gates equal zero immediately after checkpoint loading;
 - legacy baseline and dual-trace configs pass unchanged forward smoke tests.
+
+## Official-style Single/Dual Multi-seed Addendum
+
+`train_pasted_race_fourclass.py` uses the same `StratifiedBatchSampler` and
+four-class `SupConLoss(temperature=0.07)` as `train.py` when enabled. Joint
+training adds SupCon to CE before the method-specific masked trace losses;
+validation and checkpoint selection remain based on the unchanged classifier
+metrics.
+
+Two canonical configs define the control:
+
+- `PASTED_RACE_fourclass_single_official.json`: CE + SupCon + polishing MSE.
+- `PASTED_RACE_fourclass_dual_official.json`: CE + SupCon + polishing MSE +
+  humanization MSE.
+
+`scripts/train_pasted_race_trace_official_multiseed.sh` launches six sequential
+runs. For each seed it passes the corresponding completed strong-baseline
+checkpoint, an isolated output directory, and the same seed to the joint
+trainer. The configs set both calibration and delayed fusion to zero so all 20
+epochs follow the same official outer training schedule.
+
+## Creator-Retention P2 Queue Addendum
+
+`utils/creator_retention_label_builder.py --edited_pairs_only` emits a P2-only
+artifact containing Polished and Humanized targets, while retaining the
+default all-class behavior needed by later joint training. It never places the
+paired source article in detector inputs.
+
+`utils/analyze_creator_retention_signal.py` reduces the matching direction's
+valid EDU `1-BLEU4` targets to a documented per-document mean, then reports
+Creator/Editor Pearson and Spearman correlations, quantile summaries, split
+and domain audits, a row-level CSV, four overall histograms, and domain
+boxplots. The domain is deterministically recovered from the audited
+`group_id` prefix.
+
+`scripts/queue_creator_signal_after_trace_controls.sh` waits for all six
+official-control `metrics.json` files and validates their primary test fields
+before launching `scripts/run_creator_retention_signal_analysis.sh`. The queue
+currently produces P2 first. Before P2 completes, a separate post-P2 runner
+will be implemented and validated to hand off the full Creator experiment
+matrix after its artifacts are verified. P2 diagnostics are reported but do
+not cancel later stages.
+
+The post-P2 implementation must schedule one GPU process at a time:
+
+1. P3: three Creator input modes by three seeds (nine runs), matching-seed
+   strong-baseline structural initialization, Creator MSE only, validation MSE
+   selection with Spearman tie-breaking.
+2. P5: the best P3 input mode in three matching-seed full Creator+Editor joint
+   runs under the official CE+SupCon recipe.
+3. P6: three-seed Creator-only, Creator-loss-without-fusion, and all-auxiliary-
+   lambdas-zero controls. RACE, Editor-only, and full Creator+Editor cells are
+   linked from P1, P4, and P5 rather than trained again.
+
+For P3, the three input modes are implemented at EDU level. For every valid
+EDU, the Creator head consumes respectively `h_i`, `[h_i; h_root]`, or
+`[h_i; h_root; h_i * h_root]` and emits one logit. The document prediction is
+the sigmoid of the arithmetic mean of its valid EDU logits; an empty-EDU
+fallback uses `h_root`. This keeps the target document-level, gives all three
+variants an identical aggregation rule, and prevents document length from
+changing the MSE scale. P5 reuses the exact winning Creator head shape and
+forms its Creator fusion representation from score-weighted EDU features.
+
+The P3-to-P5 handoff is automatic. After all nine P3 metrics exist, the
+launcher computes each input mode's mean validation MSE over seeds
+42/2026/3407 (mean Spearman breaks an exact tie), records the selected mode,
+and starts P5 without user intervention. P5 initializes RACE components,
+polishing trace, humanization trace, and Creator head from matching-seed
+checkpoints. Its four-class data are formed by joining the already-computed P2
+edited-pair retention scores onto the dual-trace group-safe records; Human and
+Generated source documents receive the predefined self-retention target 1.0.
+No SciBERT labels are recomputed during this handoff.
+
+Each run writes a resolved config, initialization audit, validation history,
+best checkpoint, test predictions, and metrics. A final aggregator verifies
+the seed and split provenance before calculating means and sample standard
+deviations.
+
+## End-to-End Trace Seed-Matching Addendum
+
+`train_pasted_race.py` accepts a seed override and passes the resolved seed to
+the shuffled DataLoader generator. Two official-optimized trace configs align
+all applicable outer-loop settings to strong RACE while retaining masked MSE
+as the task-specific objective. Six new trace checkpoints are written as
+`lexical_official_seed{42,2026,3407}` and
+`humanization_lexical_official_seed{42,2026,3407}`.
+
+`train_pasted_race_fourclass.py` accepts explicit polishing and humanization
+checkpoint overrides. A sequential launcher first validates each required
+trace-only `metrics.json` and `best_model.pt`, then starts the matching-seed
+single/dual reruns under new `fourclass_{single,dual}_official_e2e_seed*`
+directories. It never overwrites the earlier fixed-trace control. Each joint
+initialization report must show the same-seed strong baseline and corresponding
+same-seed trace checkpoint paths before the run is considered valid.
