@@ -180,13 +180,20 @@ def evaluate(
         output = model(batch)
         logits = output["logits"]
         labels = batch["labels"].to(device)
-        trace_loss = masked_mse(
-            output["lexical_trace_scores"],
-            batch["edu_lexical_scores"],
-            batch["edu_lexical_masks"],
-            device,
-            allow_empty=True,
-        )
+        lexical_scores = output.get("lexical_trace_scores")
+        if lexical_scores is not None:
+            trace_loss = masked_mse(
+                lexical_scores,
+                batch["edu_lexical_scores"],
+                batch["edu_lexical_masks"],
+                device,
+                allow_empty=True,
+            )
+        else:
+            lexical_scores = [
+                logits.new_empty((0,)) for _ in range(len(batch["labels"]))
+            ]
+            trace_loss = torch.zeros((), device=device)
         humanization_scores = output.get("humanization_trace_scores")
         if humanization_scores is not None:
             humanization_loss = masked_mse(
@@ -227,7 +234,7 @@ def evaluate(
             creator_score, creator_target, creator_mask,
         ) in zip(
             batch["id"], batch["labels"], probabilities, logits,
-            output["lexical_trace_scores"], batch["edu_lexical_scores"],
+            lexical_scores, batch["edu_lexical_scores"],
             batch["edu_lexical_masks"],
             humanization_scores, batch["edu_humanization_scores"],
             batch["edu_humanization_masks"],
@@ -371,6 +378,10 @@ def main() -> None:
         "--creator_input_mode",
         choices=["edu", "edu_root", "edu_root_interaction"],
     )
+    parser.add_argument(
+        "--ablation_variant",
+        choices=["creator_only", "creator_no_fusion", "all_lambda_zero"],
+    )
     parser.add_argument("--seed", type=int)
     parser.add_argument("--max_train_samples", type=int)
     parser.add_argument("--max_eval_samples", type=int)
@@ -397,6 +408,28 @@ def main() -> None:
         config["creator_checkpoint"] = args.creator_checkpoint
     if args.creator_input_mode:
         config["graph"]["creator_retention_input_mode"] = args.creator_input_mode
+    if args.ablation_variant in {"creator_only", "creator_no_fusion"}:
+        config["graph"].update(
+            {
+                "use_lexical_trace": False,
+                "use_lexical_fusion": False,
+                "use_humanization_trace": False,
+                "use_humanization_fusion": False,
+                "use_creator_retention": True,
+                "use_creator_retention_fusion": args.ablation_variant == "creator_only",
+            }
+        )
+        config["lexical_checkpoint"] = None
+        config["humanization_checkpoint"] = None
+        config["lexical_loss_weight"] = 0.0
+        config["humanization_loss_weight"] = 0.0
+        config["creator_retention_loss_weight"] = 0.2
+    elif args.ablation_variant == "all_lambda_zero":
+        config["lexical_loss_weight"] = 0.0
+        config["humanization_loss_weight"] = 0.0
+        config["creator_retention_loss_weight"] = 0.0
+    if args.ablation_variant:
+        config["ablation_variant"] = args.ablation_variant
     if args.epochs is not None:
         config["num_epochs"] = args.epochs
 
@@ -449,7 +482,11 @@ def main() -> None:
         metadata=metadata,
     )
     baseline_report = _load_matching_state(model, config["baseline_checkpoint"])
-    lexical_report = _load_lexical_head(model, config["lexical_checkpoint"])
+    lexical_report = None
+    if config.get("lexical_checkpoint"):
+        lexical_report = _load_lexical_head(model, config["lexical_checkpoint"])
+    elif model.use_lexical_trace:
+        raise ValueError("use_lexical_trace=true requires lexical_checkpoint")
     humanization_report = None
     if config.get("humanization_checkpoint"):
         humanization_report = _load_lexical_head(
@@ -461,7 +498,10 @@ def main() -> None:
     if config.get("creator_checkpoint"):
         creator_report = _load_creator_head(model, config["creator_checkpoint"])
     model.to(device)
-    if model.lexical_residual_gamma is None or model.lexical_residual_gamma.item() != 0.0:
+    if (
+        model.lexical_residual_gamma is not None
+        and model.lexical_residual_gamma.item() != 0.0
+    ):
         raise ValueError("Four-class residual gamma must initialize to exactly zero")
     if (
         model.humanization_residual_gamma is not None
@@ -554,7 +594,7 @@ def main() -> None:
             trace_loss = masked_mse(
                 output["lexical_trace_scores"], batch["edu_lexical_scores"],
                 batch["edu_lexical_masks"], device, allow_empty=True,
-            )
+            ) if "lexical_trace_scores" in output else torch.zeros((), device=device)
             humanization_loss = masked_mse(
                 output["humanization_trace_scores"],
                 batch["edu_humanization_scores"],
@@ -609,7 +649,8 @@ def main() -> None:
                     running["trace"] / step,
                     running["humanization"] / step,
                     running["creator_retention"] / step,
-                    float(model.lexical_residual_gamma.detach().cpu().item()),
+                    float(model.lexical_residual_gamma.detach().cpu().item())
+                    if model.lexical_residual_gamma is not None else 0.0,
                     float(model.humanization_residual_gamma.detach().cpu().item())
                     if model.humanization_residual_gamma is not None else 0.0,
                     float(model.creator_retention_residual_gamma.detach().cpu().item())

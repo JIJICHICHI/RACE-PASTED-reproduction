@@ -1837,10 +1837,40 @@ edited-pair retention scores onto the dual-trace group-safe records; Human and
 Generated source documents receive the predefined self-retention target 1.0.
 No SciBERT labels are recomputed during this handoff.
 
+A second queue waits for all three P5 `metrics.json` artifacts and then runs
+P6 sequentially: Creator-only, Creator supervision without fusion, and full
+Creator+Editor structure with all auxiliary lambdas set to zero, each over the
+same three seeds. P6 has no downstream checkpoint consumer, so after a run's
+metrics, history, predictions, resolved config, and initialization audit are
+verified, its large `best_model.pt` is deleted to keep the nearly-full single
+disk from interrupting later cells. P1/P4/P5 checkpoints are retained.
+
 Each run writes a resolved config, initialization audit, validation history,
 best checkpoint, test predictions, and metrics. A final aggregator verifies
 the seed and split provenance before calculating means and sample standard
 deviations.
+
+### Persistent P5-to-P6 Recovery Runner
+
+Long P5/P6 queues must run inside a detached `tmux` session and mirror stdout
+and stderr to `logs/pasted_race/`. The recovery runner invokes the existing P5
+launcher first and P6 launcher second, so only one GPU training process exists
+at a time. Existing completed runs are skipped only when their formal completion
+artifacts pass the launcher's checks; an output directory without final
+`metrics.json` is treated as incomplete and is retrained rather than reported.
+
+This runner changes only process lifetime and logging. It does not change the
+data split, model, initialization, optimizer, seed, checkpoint selection, or
+evaluation protocol.
+
+After P6, the runner executes a strict result aggregator. The aggregator
+requires all seeds for the reused RACE and Editor cells plus the newly trained
+Creator, no-fusion, Creator+Editor, and lambda-zero cells. It emits per-seed
+records and mean/sample-standard-deviation summaries for the four primary
+classification metrics, all class-wise F1/TPR values, Creator regression
+metrics, and both applicable Editor trace metric families. Missing files or
+required classification keys make the aggregation fail instead of silently
+producing a partial table.
 
 ## End-to-End Trace Seed-Matching Addendum
 

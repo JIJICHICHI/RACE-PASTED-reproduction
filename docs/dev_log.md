@@ -739,3 +739,39 @@ HF_HOME=/home/dx/.cache/huggingface HUGGINGFACE_HUB_CACHE=/home/dx/.cache/huggin
 **验证与空间处理**：8 条样本 smoke 因官方分层 sampler 无完整 batch，仅验证前向，不计作训练验证；随后 200 条有效 smoke 产生非零训练 loss，三个 residual gate 均从 0 更新。首次保存因磁盘满失败；删除本轮临时 smoke 目录，并在保留 metrics/history/predictions 的前提下删除 P3 两个落选模式的 6 个可重训 checkpoint，空间从 0 恢复到 5.3 GB。
 
 **执行**：P5 seed 42 已启动；完成后自动运行 seeds 2026/3407。选择报告为 `results/pasted_race/creator_retention_p3_selection.json`。
+
+### 2026-09-15 16:30 — 迭代 #14：P6 不停机接续队列
+
+**用户要求**：P5 完成后继续所有既定实验，不等待人工确认。
+
+**实现**：四分类 trainer 支持无 lexical/humanization 分支的 Creator-only 评估与训练，并新增 `creator_only`、`creator_no_fusion`、`all_lambda_zero` 三种显式消融覆盖。`queue_p6_after_p5.sh` 等待三个 P5 正式 metrics 后串行运行 3 variants × 3 seeds。
+
+**空间契约**：P6 每组完成并验证 metrics 后删除其无下游用途的 `best_model.pt`，保留 metrics/history/predictions/config/init audit；P1/P3-winning/P4/P5 权重不删除。
+
+### 2026-09-15 20:15 — 迭代 #15：P5/P6 持久恢复入口
+
+**改动原因**：原 P5 交互执行会话随对话等待调用中断而关闭，导致 seed 2026 只留下中间 checkpoint、没有最终 `metrics.json`，seed 3407 和 P6 尚未执行。GPU 驱动经宿主机检查正常，磁盘仍有约 7.8 GB。
+
+**改动内容**：
+- `docs/implementation.md`：补充 detached tmux、持久日志、未完成目录重训和单 GPU 串行契约。
+- `scripts/resume_p5_p6_persistent.sh`：新增总恢复入口，依次调用既有 P5、P6 队列，并把 stdout/stderr 同步写入 `logs/pasted_race/`。
+
+**恢复语义**：P5 seed 42 已有最终 `metrics.json` 与 checkpoint，安全跳过；seed 2026 仅有中间 checkpoint，没有最终 metrics，因此从头重跑该种子；之后自动运行 seed 3407 和 P6 三种消融 × 三种子。模型、数据、超参及评估协议均不变。
+
+**预期效果**：训练不再依赖当前对话工具会话存活，且异常退出时保留完整日志用于续跑诊断。
+
+**文档同步**：idea_report.md 否（方法和实验设计未变） | implementation.md 是 | configs 否
+
+### 2026-09-15 20:17 — 迭代 #15：P5/P6 完成性聚合器
+
+**改动原因**：完整队列结束后需要自动验证所有复用/新训练单元格和三种子覆盖，防止人工汇总遗漏或把中间产物当正式结果。
+
+**改动内容**：
+- `utils/aggregate_creator_editor_experiments.py`：严格加载 RACE、RACE+Editor、RACE+Creator、Creator no-fusion、RACE+Creator+Editor、full structure lambda=0 六个条件 × 三种子；生成 per-seed CSV、mean±sample-std CSV、完整 JSON 和 Markdown 表。
+- `scripts/queue_p6_after_p5.sh`、`scripts/resume_p5_p6_persistent.sh`：P6 全部成功后自动调用聚合器；任何必需结果或分类指标缺失都会令总队列失败并保留日志。
+
+**指标覆盖**：Accuracy、Macro-F1、Macro-AUROC、Macro TPR@1%FPR、四类 F1/TPR、Creator MSE/Pearson/Spearman，以及适用的 polishing/humanization Editor 指标。
+
+**文档同步**：idea_report.md 否（实验矩阵未变） | implementation.md 是 | configs 否
+
+**验证**：聚合器 `py_compile`、内存三种子 mean/sample-std 与 Markdown fixture smoke、两个队列脚本 Bash 语法、`train_pasted_race_fourclass.py` 语法及 `git diff --check` 均通过。正式聚合将在 P6 九组结果齐全后运行。
