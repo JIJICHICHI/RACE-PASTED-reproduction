@@ -13,6 +13,38 @@ All cells use the fixed group-safe split and seeds 42/2026/3407. Standard deviat
 | RACE+Creator+Editor | 0.940833 ± 0.006602 | 0.907585 ± 0.011878 | 0.984779 ± 0.001207 | 0.810296 ± 0.021270 |
 | Full structure, lambda=0 | 0.944271 ± 0.002345 | 0.913975 ± 0.003340 | 0.985662 ± 0.000796 | 0.827617 ± 0.006776 |
 
+## Interpretation of the lambda-zero control
+
+The lambda-zero cell retains the complete Creator/Editor branch and fusion
+architecture but sets the Creator-retention, polishing-trace, and
+humanization-trace loss weights to zero. It is therefore not the original RACE
+model: the additional projections and fusion parameters are still optimized by
+the four-class classification objective. They can act as extra learnable
+feature channels even though they are not constrained to represent their named
+continuous targets.
+
+This control reaches `82.76±0.68%` Macro TPR@1%FPR, compared with
+`79.75±1.60%` for RACE and `81.03±2.13%` for the fully supervised
+Creator+Editor model. Consequently, the low-FPR improvement cannot be
+attributed to Creator/Editor continuous supervision: the extra architecture,
+parameterization, and altered optimization path are already sufficient to
+explain it. Adding all continuous objectives does not add another gain and may
+over-constrain the representation.
+
+One plausible mechanism is gradient conflict. Classification, Creator
+retention, polishing modification, and humanization modification can request
+different updates to shared parameters. Their weighted gradient sum can move
+the representation toward accurate continuous regression without improving
+the extreme score ordering required at 1% FPR. This experiment alone does not
+prove gradient conflict, however; label noise, loss scaling, checkpoint timing,
+or redundant targets remain alternative explanations. Direct gradient-cosine
+measurements would be required to establish that mechanism.
+
+Creator-only still has the best Accuracy (`94.58%`) and Macro-F1 (`91.75%`),
+while Editor improves low-FPR TPR relatively consistently. Thus the evidence
+supports some value from individual branches, but does not support a claim that
+joint Creator+Editor continuous supervision causes the best low-FPR result.
+
 ## Primary metrics by seed
 
 | Method | Seed | Accuracy | Macro-F1 | Macro-AUROC | Macro TPR@1%FPR |

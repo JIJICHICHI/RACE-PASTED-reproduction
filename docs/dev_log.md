@@ -785,3 +785,93 @@ HF_HOME=/home/dx/.cache/huggingface HUGGINGFACE_HUB_CACHE=/home/dx/.cache/huggin
 **失败语义**：训练与本地聚合产物优先；若 GitHub 网络或凭据失败，错误保留在持久日志中，本地结果不丢失，可稍后单独重推。
 
 **文档同步**：idea_report.md 否 | implementation.md 是 | configs 否
+
+### 2026-09-15 21:31 — 迭代 #16：统一正式实验入口并清理旧设置
+
+**改动原因**：旧 seed-42-only、2.0e-5/2.5e-5、弱 baseline、10/12 epochs、patience 3/4 和 fixed-trace 初始化入口与当前正式三种子协议混在同一目录及 README 中，存在误运行风险。
+
+**正式协议**：四分类统一使用 group-safe split、seeds 42/2026/3407、`lr=2.9e-5`、batch 16、warmup 0.1、最多 20 epochs、patience 5、validation Macro-F1 选模。
+
+**删除的旧配置**：
+- `PASTED_RACE_fourclass_baseline.json`
+- `PASTED_RACE_fourclass_creator_editor_joint.json`
+- `PASTED_RACE_fourclass_dual_joint.json`
+- `PASTED_RACE_fourclass_joint.json`
+- `PASTED_RACE_humanization_lexical.json`
+- `PASTED_RACE_joint.json`
+- `PASTED_RACE_lexical.json`
+
+**删除的旧启动脚本**：
+- `queue_creator_signal_after_trace_controls.sh`
+- `train_humanization_trace.sh`
+- `train_pasted_race.sh`
+- `train_pasted_race_creator_editor.sh`
+- `train_pasted_race_fourclass_baseline.sh`
+- `train_pasted_race_fourclass_baseline_official.sh`
+- `train_pasted_race_fourclass_dual_joint.sh`
+- `train_pasted_race_fourclass_joint.sh`
+- `train_pasted_race_joint.sh`
+
+**保留为 historical**：旧结果/checkpoint/data 全部保留；append-only `dev_log.md` 和 `conversation.md` 保留原始记录；LE-RACE/FCE/FAR/tuning 配置族保留并由 `configs/HISTORICAL.md` 标识；fixed seed-42 trace-head control 脚本保留并增加显式环境变量防误运行门禁。
+
+**正式入口更新**：README 现在只展示 Strong RACE 三种子、official trace-only + E2E Single/Dual、Creator Retention P2/P3、P5/P6。Single/Dual canonical config 的默认 checkpoint 已指向 official seed-42 trace，正式 E2E launcher 仍逐 seed 覆盖。Strong RACE launcher 明确列出三个种子。
+
+**训练器修正**：`train_pasted_race.py` 和 `train_pasted_race_fourclass.py` 不再为 seed、learning rate、warmup、patience 以及 joint calibration 提供旧值 fallback，要求从 config 显式读取。当前 P6 config 已完整提供所有字段，数值行为未改变。
+
+**验证**：9 个保留的 PASTED configs 全部通过 `2.9e-5/16/0.1/20/5` 协议审计；所有 shell config 引用和 README script 引用存在；Python compile、JSON load、全部 shell `bash -n`、`git diff --check` 通过。`pasted_race_fourclass`、`pasted_race_fourclass_dual`、`pasted_race_creator_editor`、`pasted_race_creator_retention_signal` 四份数据的 train/val/test group overlap 均为 `(0,0,0)`，groups 均为 `2800/400/800`。清理期间 P6 tmux 和 GPU 训练保持正常，未启动额外训练。
+
+**删除影响**：只删除 Git 跟踪的旧源码入口，可从 Git 历史恢复；没有删除数据、正式结果、checkpoint、预测文件或当前 P5/P6 运行文件。
+
+**文档同步**：user_requirements.md 是 | idea_report.md 是 | implementation.md 是 | README 是 | configs 是
+
+### 2026-09-15 22:10 — 迭代 #17：正式 Creator/Modification 条件诊断与探针
+
+**实验动机**：旧结论把 Human/LLM final-actor 轴与是否发生后编辑的 Modification 轴混用，且 Generated/Humanized 的 30.92% TPR 来自旧 split、旧学习率 checkpoint 的四分类概率派生诊断，不能直接推广到当前正式协议。
+
+**实现内容**：新增 `scripts/diagnose_group_safe_creator_modification.py` 与串行入口 `scripts/run_group_safe_creator_modification_diagnostics.sh`。脚本对三个正式 Strong RACE seed 执行两套互不混淆的评估：首先从保存的四分类 logits 派生 Creator、Modification、final-actor 三大轴及四个条件二分类；然后在冻结 `h_root` 上训练标准化 Logistic Regression，使用原 train、val、test manifest，validation AUROC 选择正则系数，test 只评估一次。
+
+**数据安全契约**：运行前校验三个 split 的 SHA-256、文档/组/类别计数及 group overlap；聚合前要求三个 seed 的 manifest hash 完全一致。不会重新 shuffle 或生成 probe split。
+
+**几何指标**：对 Creator、Modification、final-actor 三种标签分别报告 test cosine silhouette、精确类内/类间平均余弦相似度及 separation；最终输出逐 seed JSON、三种子 mean±sample-std JSON 和 Markdown 报告。
+
+**运行说明**：执行 `bash scripts/run_group_safe_creator_modification_diagnostics.sh`。输出位于 `results/diagnostics/group_safe_creator_modification/`；特征缓存仅包含冻结 `h_root` 和 manifest 校验信息，不包含新 checkpoint。
+
+**文档同步**：user_requirements.md 是 | implementation.md 是 | README 否（诊断入口暂不设为默认训练命令）
+
+### 2026-09-15 22:24 — 迭代 #17 指标方向修正
+
+**发现的问题**：旧版 `Generated vs Humanized` 的 30.92% 将 Generated（AI final actor）设为正类；新的 Modification 任务自然将 Humanized（Modified）设为正类。TPR@1%FPR 对正类方向不对称，二者不能直接比较。
+
+**修正**：所有二分类结果同时计算 positive-class 和 negative-class TPR@1%FPR；G/Hu 专表明确命名为 Humanized TPR 与 Generated TPR。已有冻结特征缓存增加 manifest hash 和 ID 顺序复验后复用，不重新进行 GPU 前向。
+
+**文档同步**：implementation.md 是 | README 否
+
+### 2026-09-15 22:35 — 迭代 #17 正式结果
+
+**完成性**：三个正式 Strong RACE checkpoint 全部完成 logits 条件诊断、七个冻结 `h_root` 线性探针和三套表示几何。数据规模为 train/val/test `11200/1600/3200`、groups `2800/400/800`，三个 overlap 均为 0；三个 seed 的 manifest SHA-256 完全一致。
+
+**核心局部结果**：`Generated vs Humanized` 在四个条件任务中对每个 seed、两种评估方式均为最低 AUROC。四分类条件概率的三种子 AUROC 为 `0.943994±0.003995`；Humanized-positive TPR@1%FPR 为 `0.709622±0.007874`，Generated-positive 为 `0.372214±0.082713`。冻结探针对应 AUROC `0.934639±0.007869`，Humanized-positive TPR `0.725086±0.016570`，Generated-positive TPR `0.170223±0.114720`。
+
+**指标方向结论**：正式协议没有复现与旧 30.92% 完全相同的单值，因为正类方向与 seed/split 都不同；但当 Generated 与旧诊断一样作为正类时，四分类结果仍只有 `37.22±8.27%`，所以低 FPR 短板在定性上成立。
+
+**大轴结果**：冻结探针 Creator/Modification/final-actor 的 AUROC 分别为 `0.9935/0.9782/0.9846`，positive TPR@1%FPR 为 `0.9400/0.7901/0.5280`。cosine silhouette 分别为 `0.6287/0.0556/0.6216`；Modification 的类内减类间 cosine separation 为 `-0.0372±0.0253`，三个 seed 均为负，说明新 Modification 标签没有形成比旧 final-actor 更紧凑的全局簇。
+
+**结论边界**：支持“G/Hu 是稳定的具体局部瓶颈”，不支持“仅重新命名为 Modification 就得到更清晰的全局表示几何”。现有结果仍不构成采用 GRL 或正交约束的证据。
+
+**产物**：`results/diagnostics/group_safe_creator_modification/report.md`、`summary.json`、三个 `seed*/diagnostics.json` 和可复验的冻结特征缓存。
+
+**验证**：Python compile、Bash syntax、标签/概率方向 smoke、缓存 manifest hash 与 ID 顺序复验、完整二次缓存重跑、`git diff --check` 均通过。
+
+### 2026-09-15 23:24 — 迭代 #18：P6 后按文本长度鲁棒性实验
+
+**论文协议核对**：直接检查 RACE 论文 Figure 4，确认横轴为 `0–200 / 200–400 / 400–600 / 600–800 / 800+` token，纵轴为四分类 Macro TPR@1%FPR。图中论文参考值为 RACE `58.8/80.0/86.8/97.0/94.8%`、CoCo `57.6/74.4/79.1/97.0/96.0%`。论文未说明 token counter，因此当前实验明确采用完整、未截断最终文本的 `FacebookAI/roberta-base` token 数，并以半开区间消除边界重叠。
+
+**实现内容**：新增 `utils/analyze_length_bucket_performance.py`，统一加载 Strong RACE、E2E Single、E2E Dual/Editor、P5 Creator+Editor 和三种 P6 消融的三种子正式 test logits。脚本强制校验 3,200 个 item ID、manifest 标签、四类支持、有限 logits，并要求重新计算的整集 Accuracy/Macro-F1/Macro-AUROC/Macro TPR 与原正式 metrics 在 `1e-6` 内一致，之后才输出分桶结果、逐种子/均值标准差 CSV/JSON、Markdown 和 PNG。
+
+**等待队列**：新增 `scripts/queue_length_analysis_after_p6.sh`，在独立 `pasted_length_after_p6` tmux 中运行。它等待 P6 的 9 个新单元全部产生 `metrics.json`，再等待 P6 launcher 完成聚合/推送并退出，最后只用 CPU 读取预测；不会打断训练或占用 GPU。当前队列已成功进入等待 `creator_no_fusion seed=3407` 状态。
+
+**Smoke 验证**：Python compile、shell syntax 和 `git diff --check` 通过。RoBERTa 分桶文档数为 `341/1372/949/353/185`，各桶均含四类；`800+` 只有 6 个 Humanized 样本，报告会保留类别计数以限制低 FPR 结论。已对当前存在的 17 组正式预测完成整集指标一致性校验，包括 Strong/Single/Dual/P5 各三 seed、Creator-only 三 seed及 no-fusion 已完成的两个 seed，全部通过。
+
+使用完整 35 个 method/seed/bucket 单元的替身矩阵对聚合器、两份 CSV、Markdown 和双面板 PNG 输出路径做了端到端 smoke，所有产物均成功生成。
+
+**文档同步**：user_requirements.md 是 | idea_report.md 是 | implementation.md 是 | README 是

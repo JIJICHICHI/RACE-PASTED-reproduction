@@ -5,7 +5,7 @@ export HF_HOME="/home/dx/.cache/huggingface"
 export HUGGINGFACE_HUB_CACHE="/home/dx/.cache/huggingface/hub"
 export TRANSFORMERS_CACHE="/home/dx/.cache/huggingface/transformers"
 
-for seed in 42 2026; do
+for seed in 42 2026 3407; do
   conda run --no-capture-output -n race python train.py \
     --config "configs/pasted_race/PASTED_RACE_fourclass_baseline_official_seed${seed}.json"
 done

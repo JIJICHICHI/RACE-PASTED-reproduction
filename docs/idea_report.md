@@ -2,6 +2,14 @@
 
 > Extended: focused Part 2/Part 3 addendum for the PASTED-RACE integration; the
 > original project did not contain an `idea_report.md`.
+>
+> **Canonical protocol (2026-09-15):** Current formal four-class comparisons
+> use the fixed group-safe split, seeds 42/2026/3407, learning rate 2.9e-5,
+> batch size 16, warmup 0.1, at most 20 epochs, patience 5, and validation
+> Macro-F1 checkpoint selection. Earlier seed-42-only, 2.0e-5/2.5e-5,
+> calibration, weak-baseline, and fixed-trace passages below are retained only
+> as research history; they are not executable defaults. See the README and
+> the final addenda in this document for canonical commands and conclusions.
 
 ## Part 2 — Method: Joint Lexical-Trace Fusion
 
@@ -272,3 +280,19 @@ control. Results are stored separately and compared against both the paired
 strong baseline and the
 fixed-trace-initialization table, preventing the two stability claims from
 being conflated.
+
+## Part 4 — Post-P6 Robustness Across Text Length
+
+The RACE paper's Figure 4 evaluates Macro TPR@1%FPR in five printed token-length
+intervals: `0–200`, `200–400`, `400–600`, `600–800`, and `800+`. After P6, the
+same diagnostic is applied to every canonical three-seed method using its saved
+test logits. This asks whether aggregate low-FPR gains persist across short and
+long documents instead of being explained by a shift toward an easier length
+range.
+
+The canonical RACE RoBERTa tokenizer counts the complete final input without
+truncation; half-open boundaries remove the ambiguity at 200/400/600/800. The
+paper does not document its tokenizer, so its published RACE/CoCo curve is a
+historical reference rather than a directly pooled baseline. The formal claim
+must come from paired methods on the current group-safe test set, with bucket
+class support and uncertainty across seeds reported alongside the mean curve.

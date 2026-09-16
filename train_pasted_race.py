@@ -240,7 +240,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(message)s",
     )
-    seed = int(config.get("seed", 42))
+    seed = int(config["seed"])
     set_seed(seed)
     if config.get("device", "cuda").startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available")
@@ -344,13 +344,13 @@ def main() -> None:
     trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = AdamW(
         trainable,
-        lr=float(config.get("learning_rate", 2.5e-5)),
+        lr=float(config["learning_rate"]),
         weight_decay=float(config.get("weight_decay", 0.01)),
     )
     total_steps = max(1, len(train_loader) * int(config["num_epochs"]))
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=int(total_steps * float(config.get("warmup_ratio", 0.1))),
+        num_warmup_steps=int(total_steps * float(config["warmup_ratio"])),
         num_training_steps=total_steps,
     )
 
@@ -436,7 +436,7 @@ def main() -> None:
             )
         else:
             patience += 1
-            if patience >= int(config.get("early_stopping_patience", 3)):
+            if patience >= int(config["early_stopping_patience"]):
                 LOGGER.info("early stopping after epoch %d", epoch + 1)
                 break
 

@@ -434,7 +434,7 @@ def main() -> None:
         config["num_epochs"] = args.epochs
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-    set_seed(int(config.get("seed", 42)))
+    set_seed(int(config["seed"]))
     device = torch.device(config.get("device", "cuda"))
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available")
@@ -458,12 +458,12 @@ def main() -> None:
         for split in ("train", "val", "test")
     }
     datasets["train"] = limit_dataset(
-        datasets["train"], args.max_train_samples, int(config.get("seed", 42)), True
+        datasets["train"], args.max_train_samples, int(config["seed"]), True
     )
     datasets["val"] = limit_dataset(datasets["val"], args.max_eval_samples, 0, False)
     datasets["test"] = limit_dataset(datasets["test"], args.max_eval_samples, 0, False)
     workers = int(config.get("num_workers", 0))
-    run_seed = int(config.get("seed", 42))
+    run_seed = int(config["seed"])
     loaders = {
         "train": make_loader(
             datasets["train"], int(config["batch_size"]), workers, True, run_seed
@@ -558,13 +558,13 @@ def main() -> None:
     ]
     optimizer = AdamW(
         trainable,
-        lr=float(config.get("learning_rate", 2.0e-5)),
+        lr=float(config["learning_rate"]),
         weight_decay=float(config.get("weight_decay", 0.01)),
     )
     total_steps = max(1, len(loaders["train"]) * int(config["num_epochs"]))
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=int(total_steps * float(config.get("warmup_ratio", 0.1))),
+        num_warmup_steps=int(total_steps * float(config["warmup_ratio"])),
         num_training_steps=total_steps,
     )
     use_supcon = bool(config.get("use_supcon", False))
@@ -575,7 +575,7 @@ def main() -> None:
     best_f1 = -float("inf")
     patience = 0
     history: list[dict[str, Any]] = []
-    calibration_epochs = int(config.get("lexical_calibration_epochs", 1))
+    calibration_epochs = int(config["lexical_calibration_epochs"])
     for epoch in range(int(config["num_epochs"])):
         calibration = epoch < calibration_epochs
         set_calibration_trainability(model, joint_trainability, calibration)
@@ -685,7 +685,7 @@ def main() -> None:
             )
         else:
             patience += 1
-            if patience >= int(config.get("early_stopping_patience", 4)):
+            if patience >= int(config["early_stopping_patience"]):
                 LOGGER.info("early stopping after epoch %d", epoch + 1)
                 break
 

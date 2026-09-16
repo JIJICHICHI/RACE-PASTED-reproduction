@@ -3,6 +3,34 @@
 > 生成时间：2026-07-06 | 策略：强 baseline 改造 | 状态：PENDING_REVIEW  
 > 关联实验设计：`docs/idea_report.md` Part 3
 
+> **Canonical protocol (2026-09-15):** Formal PASTED-RACE four-class runs use
+> only the fixed group-safe split, seeds 42/2026/3407, `lr=2.9e-5`, batch 16,
+> warmup 0.1, maximum 20 epochs, patience 5, and validation Macro-F1 model
+> selection. Older implementation sections are historical records and do not
+> define current default commands.
+
+## Canonical Experiment Surface
+
+The maintained execution surface consists of:
+
+- Strong RACE: three `PASTED_RACE_fourclass_baseline_official_seed*.json`
+  configs and `train_pasted_race_fourclass_baseline_official_multiseed.sh`.
+- Seed-matched Editor traces and Single/Dual integration:
+  `PASTED_RACE_{lexical,humanization_lexical}_official.json`,
+  `PASTED_RACE_fourclass_{single,dual}_official.json`, and
+  `train_pasted_race_trace_end_to_end_multiseed.sh`.
+- Creator Retention P2/P3: the signal-analysis launcher,
+  `PASTED_RACE_creator_retention_p3.json`, and the P3 multiseed launcher.
+- P5/P6: `PASTED_RACE_fourclass_creator_editor_official.json` and the
+  validated P5/P6 persistent queue scripts.
+
+Obsolete PASTED configs using 2.0e-5/2.5e-5, 10/12 epochs, patience 3/4,
+weak-baseline initialization, or pre-E2E fixed checkpoints are removed along
+with their dedicated launchers. Their result directories and append-only
+records remain untouched. Independent LE-RACE, FCE/FAR, tuning, and the
+fixed-trace outer-loop control are retained as explicitly historical research
+branches, not default entry points.
+
 ## AI-Humanization Lexical Extension
 
 `utils/build_humanization_trace_data.py` filters complete same-group
@@ -1560,8 +1588,10 @@ data/pasted_race/
   - `masked_trace_mse(...)`：严格按有效 EDU 数平均。
   - `evaluate_trace(...)`：计算 MSE、Pearson、Spearman、AUROC、TPR@1%FPR。
   - 仅用 trace loss 更新模型；验证 AUROC 选择 checkpoint，相关系数作 tie-breaker。
-- `configs/pasted_race/PASTED_RACE_lexical.json`：实验超参数。
-- `scripts/generate_pasted_race_labels.sh`、`scripts/train_pasted_race.sh`：运行入口。
+- Historical implementation used the now-removed
+  `PASTED_RACE_lexical.json`/`train_pasted_race.sh` pair. The maintained
+  replacement is `PASTED_RACE_lexical_official.json`, launched through
+  `train_pasted_race_trace_end_to_end_multiseed.sh`.
 
 ### Tensor shape 与 loss
 
@@ -1753,9 +1783,10 @@ the calibration epoch, and adds `creator_retention_loss_weight` in joint
 training. Existing configs with `use_creator_retention=false` remain behaviorally
 unchanged.
 
-`configs/pasted_race/PASTED_RACE_fourclass_creator_editor_joint.json` defines
-the full three-objective experiment. `scripts/build_creator_retention_data.sh`
-generates its dataset; `scripts/train_pasted_race_creator_editor.sh` runs it.
+The historical single-config Creator/Editor launcher was removed after the
+formal matrix replaced it. The maintained three-objective configuration is
+`PASTED_RACE_fourclass_creator_editor_official.json`; P5/P6 are launched by
+the persistent queue after Creator data preparation and P3 selection.
 
 Validation contract:
 
@@ -1799,13 +1830,11 @@ and domain audits, a row-level CSV, four overall histograms, and domain
 boxplots. The domain is deterministically recovered from the audited
 `group_id` prefix.
 
-`scripts/queue_creator_signal_after_trace_controls.sh` waits for all six
-official-control `metrics.json` files and validates their primary test fields
-before launching `scripts/run_creator_retention_signal_analysis.sh`. The queue
-currently produces P2 first. Before P2 completes, a separate post-P2 runner
-will be implemented and validated to hand off the full Creator experiment
-matrix after its artifacts are verified. P2 diagnostics are reported but do
-not cancel later stages.
+The historical fixed-trace-to-P2 waiting launcher has been removed because its
+prerequisites and P2 output are complete. The maintained standalone P2 entry
+is `scripts/run_creator_retention_signal_analysis.sh`; P3 and P5/P6 have their
+own canonical multiseed/persistent launchers. P2 diagnostics do not cancel
+later stages.
 
 The post-P2 implementation must schedule one GPU process at a time:
 
@@ -1877,6 +1906,35 @@ stages only the generated final report directory, creates a dedicated results
 commit when those files changed, and pushes `main`. Model weights, datasets,
 raw prediction artifacts, and runtime logs remain local.
 
+## Group-Safe Creator/Modification Diagnostic Addendum
+
+`scripts/diagnose_group_safe_creator_modification.py` consumes a formal Strong
+RACE run directory and the canonical train/validation/test graph JSONL files.
+It verifies split identity and zero group overlap before computing any metric.
+
+The saved four-class test logits are converted into three global scores and
+four pair-conditional scores without retraining. Conditional probabilities are
+renormalized within the relevant pair, for example
+`p(Humanized)/(p(Generated)+p(Humanized))` for fixed AI origin.
+Every conditional result reports low-FPR recall in both class orientations,
+because TPR@1%FPR with Humanized positive is not comparable to the historical
+diagnostic that treated Generated as positive.
+
+For a genuinely new representation diagnostic, the script extracts frozen
+`h_root` features for train and validation from the selected checkpoint and
+reuses the checkpoint's saved test `h_root` features. It fits a
+`StandardScaler + LogisticRegression(class_weight="balanced")` pipeline for
+the creator, modification, final-actor, Human/Polished, Generated/Humanized,
+Human/Generated, and Polished/Humanized tasks. Regularization `C` is selected
+by validation AUROC with deterministic smaller-`C` tie-breaking. No examples
+are shuffled across the canonical splits.
+
+For each of the three global axes, the script also reports exact within-axis
+and between-axis mean cosine similarity plus test-set silhouette. A separate
+aggregator checks that seeds 42/2026/3407 use the same manifests and emits
+per-seed JSON plus mean/sample-standard-deviation Markdown tables. These
+diagnostics do not alter a checkpoint or start a new model-training run.
+
 ## End-to-End Trace Seed-Matching Addendum
 
 `train_pasted_race.py` accepts a seed override and passes the resolved seed to
@@ -1893,3 +1951,25 @@ single/dual reruns under new `fourclass_{single,dual}_official_e2e_seed*`
 directories. It never overwrites the earlier fixed-trace control. Each joint
 initialization report must show the same-seed strong baseline and corresponding
 same-seed trace checkpoint paths before the run is considered valid.
+
+## Post-P6 Text-Length Analysis Runner
+
+`utils/analyze_length_bucket_performance.py` loads the canonical group-safe test
+graph manifest, computes an untruncated RoBERTa token count for every final
+article, and assigns each item to one of five half-open Figure 4 buckets. It
+then resolves the formal prediction artifact for all seven canonical methods
+and seeds, checks exact ID and label alignment, and recomputes the complete-test
+classification metrics as a provenance guard before calculating bucket-level
+metrics.
+
+The analyzer writes auditable per-item lengths, per-seed bucket metrics,
+three-seed mean/sample-standard-deviation summaries, Markdown tables, JSON,
+CSV, and a two-panel PNG. Macro TPR@1%FPR is primary; the other classification
+and class-wise metrics are retained. A bucket missing any of the four classes
+is rejected rather than silently assigning an artificial zero AUROC.
+
+`scripts/queue_length_analysis_after_p6.sh` is a CPU-only detached follow-on
+runner. It waits for all nine new P6 metrics files and for the active P6 queue
+process to exit, then invokes the analyzer once. Its sentinel and output checks
+make restarts idempotent. It never launches training or loads model weights, so
+it cannot consume GPU memory alongside P6.

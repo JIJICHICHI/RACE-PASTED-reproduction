@@ -211,3 +211,69 @@
   fixed trace initialization versus end-to-end seed-matched initialization.
 - Run all twelve new jobs sequentially on one GPU, then resume the Creator
   Retention P3–P6 queue.
+
+## Canonical Experiment Cleanup
+
+- The only canonical four-class optimization contract is learning rate
+  `2.9e-5`, batch size `16`, warmup ratio `0.1`, maximum `20` epochs,
+  patience `5`, validation Macro-F1 checkpoint selection, and seeds
+  `42/2026/3407` on the fixed group-safe split.
+- Remove old PASTED configs and launchers that are completely replaced by the
+  official seed-matched pipeline. Do not delete historical result artifacts,
+  datasets, checkpoints, or anything required by the active P5/P6 queue.
+- Preserve Strong RACE, end-to-end seed-matched Single/Dual Trace, Creator
+  Retention P2/P3, P5 Creator+Editor, P6 ablations, and
+  `reports/current_experiment_results_2026-09-15.md`.
+- Historical experiment descriptions remain in append-only logs and the
+  conversation archive, but must not appear as current default commands.
+- Training entry points must read canonical optimization values from config
+  rather than silently falling back to obsolete `2.0e-5`/`2.5e-5` or
+  patience `3`/`4` values.
+- Do not start a new training run as part of cleanup. The already-running P6
+  queue is allowed to finish and must not be interrupted.
+
+## Group-Safe Creator/Modification Diagnostics
+
+- Diagnose the three formal Strong RACE checkpoints trained on the unchanged
+  group-safe split with seeds `42/2026/3407` and `lr=2.9e-5`; never create a
+  new random probe split.
+- Distinguish three binary axes: creator origin (`Human/Polished` versus
+  `Generated/Humanized`), post-generation modification (`Human/Generated`
+  versus `Polished/Humanized`), and the historical final-actor axis
+  (`Human/Humanized` versus `Polished/Generated`).
+- First derive conditional results directly from the saved four-class logits,
+  especially the fixed-AI-origin `Generated` versus `Humanized` task.
+- Then fit frozen-`h_root` standardized logistic-regression probes using only
+  the canonical train split, choose regularization only on validation AUROC,
+  and evaluate the untouched test split once.
+- Report the four conditional tasks, all three global axes, representation
+  geometry, per-seed results, and mean/sample-standard-deviation summaries.
+- Treat this as a diagnostic only. Do not add GRL, orthogonal losses, or another
+  full model until these results establish a more specific failure mode.
+
+## Post-P6 Text-Length Analysis
+
+- Do not interrupt or compete with the active P6 GPU queue. Start the analysis
+  automatically only after every formal P6 cell has produced its completion
+  artifacts and the P6 launcher has exited.
+- Reproduce the interval design in RACE Figure 4 using final-input token-length
+  buckets `0–200`, `200–400`, `400–600`, `600–800`, and `800+`. Resolve the
+  overlapping printed boundaries as half-open intervals `[0,200)`, `[200,400)`,
+  `[400,600)`, `[600,800)`, and `[800,+inf)`.
+- Because the paper does not state the token-counting implementation, use the
+  canonical RACE RoBERTa tokenizer on the complete, untruncated final text and
+  disclose this operational definition in every report.
+- Reuse the exact canonical group-safe test manifest and saved logits from the
+  three seeds; do not retrain, resplit, or select a checkpoint by test length.
+- Compare Strong RACE, seed-matched Single Trace, seed-matched Dual/Editor
+  Trace, Creator+Editor, Creator-only, Creator-without-fusion, and the all-loss-
+  lambda-zero control. Do not insert an old CoCo result as though it used the
+  same split; list the paper's Figure 4 numbers separately as historical
+  reference only.
+- The primary measure is four-class Macro TPR@1%FPR per bucket, matching the
+  paper. Also retain Accuracy, Macro-F1, Macro-AUROC, class counts, class-wise
+  TPR, per-seed values, and three-seed mean/sample standard deviation so sparse
+  buckets and seed instability remain visible.
+- Assert exact prediction-ID/label alignment, four-class support in each
+  bucket, finite logits, and agreement between recomputed full-test metrics and
+  saved formal metrics before accepting the report.

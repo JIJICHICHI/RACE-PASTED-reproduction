@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# HISTORICAL ONLY: fixed seed-42 trace-head initialization control.
+# The canonical experiment is train_pasted_race_trace_end_to_end_multiseed.sh.
+if [[ "${ALLOW_HISTORICAL_FIXED_TRACE:-0}" != "1" ]]; then
+  echo "Historical fixed-trace control. Use scripts/train_pasted_race_trace_end_to_end_multiseed.sh instead." >&2
+  echo "Set ALLOW_HISTORICAL_FIXED_TRACE=1 only to reproduce the archived control." >&2
+  exit 2
+fi
+
 cd "$(dirname "$0")/.."
 
 export HF_HOME="/home/dx/.cache/huggingface"

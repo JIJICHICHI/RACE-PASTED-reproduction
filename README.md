@@ -9,6 +9,26 @@ This repository contains the implementation of **RACE** (_Beyond the Final Actor
 
 RACE leverages Rhetorical Structure Theory (RST) to construct logical graphs from documents, then applies Relational Graph Convolutional Networks (RGCN) to learn structure-aware representations for fine-grained AI-generated text detection.
 
+## Canonical experiment protocol
+
+All current formal four-class experiments use one fixed group-safe split and
+the following optimization contract:
+
+```text
+learning rate = 2.9e-5
+train/eval batch size = 16
+linear warmup ratio = 0.1
+maximum epochs = 20
+early-stopping patience = 5
+checkpoint selection = validation Macro-F1
+seeds = 42 / 2026 / 3407
+```
+
+Train/validation/test groups must have zero overlap. Older seed-42-only,
+2.0e-5/2.5e-5, weak-baseline, and fixed-trace experiments are historical and
+are not default execution paths. Their recorded results remain available for
+provenance; see `configs/HISTORICAL.md` and `scripts/HISTORICAL.md`.
+
 ## 1. Installation
 
 ### Requirements
@@ -113,42 +133,34 @@ RACE/
 
 ## 3. Usage
 
-### PASTED-RACE lexical trace experiment
+### Formal PASTED-RACE experiment sequence
 
-This minimal experiment keeps only paired `human_written` and
-`human_ai_polished` documents. It rebuilds group-safe splits, assigns continuous
-EDU targets using aligned-sentence `1 - BLEU-4`, and trains an EDU regression
-head on top of the RACE encoder:
+Prepare the group-safe lexical and four-class data when they are not already
+present:
 
 ```bash
 bash scripts/generate_pasted_race_labels.sh
-bash scripts/train_pasted_race.sh
-```
-
-For a short training smoke test, append
-`--data_dir data/pasted_race_smoke --output_dir results/pasted_race/smoke
---max_train_samples 16 --max_eval_samples 4 --epochs 1` to the second command.
-Outputs are written to `results/pasted_race/lexical_seed42/`.
-
-To initialize from that lexical checkpoint and train the integrated RACE binary
-classifier with lexical attention fusion:
-
-```bash
-bash scripts/train_pasted_race_joint.sh
-```
-
-The joint run writes its checkpoint, metrics, history, and EDU/document
-predictions to `results/pasted_race/joint_seed42/`.
-
-For the no-leak four-class extension, rebuild all four classes, retrain the
-original RACE architecture on that split, place the resulting checkpoint path
-in `PASTED_RACE_fourclass_joint.json`, and run residual lexical fusion:
-
-```bash
+bash scripts/generate_humanization_trace_labels.sh
 bash scripts/build_pasted_race_fourclass.sh
-bash scripts/train_pasted_race_fourclass_baseline.sh
-bash scripts/train_pasted_race_fourclass_joint.sh
+bash scripts/build_pasted_race_fourclass_dual.sh
 ```
+
+Run Strong RACE for the three canonical seeds:
+
+```bash
+bash scripts/train_pasted_race_fourclass_baseline_official_multiseed.sh
+```
+
+Run both official-optimized trace regressors and the end-to-end seed-matched
+Single/Dual Trace four-class experiments:
+
+```bash
+bash scripts/train_pasted_race_trace_end_to_end_multiseed.sh
+```
+
+These are the maintained baseline and Editor experiment entry points. The
+launcher passes matching seed-specific baseline and trace checkpoints and
+writes each run to an isolated result directory.
 
 ### Training (Single GPU)
 
@@ -182,12 +194,9 @@ bash scripts/eval_single.sh configs/RACE.json path/to/your/checkpoint.pth 1
 
 ### Multiple Seeds (Reproducibility)
 
-To run the training loop multiple times with different random seeds:
-
-```bash
-# Run 5 experiments with random seeds
-bash scripts/run_multiple_seeds.sh configs/RACE.json 5
-```
+Formal comparisons use exactly seeds `42`, `2026`, and `3407`; use the
+experiment-specific multiseed launchers above. `run_multiple_seeds.sh` is a
+generic upstream utility and is not the formal PASTED-RACE entry point.
 
 ## 4. Configuration
 
@@ -241,42 +250,47 @@ RACE/
 └── requirements.txt  # Python dependencies
 ```
 
-## 7. PASTED-RACE experiments
+## 7. Creator Retention and P5/P6
 
-### AI-to-Humanized lexical trace experiment
-
-Generate aligned `Generated -> Humanized` EDU targets and train the independent
-seed-42 trace model:
+P2 computes unrescaled SciBERT BERTScore Recall on real edited pairs and
+analyzes its relationship with Editor Modification:
 
 ```bash
-bash scripts/generate_humanization_trace_labels.sh
-bash scripts/train_humanization_trace.sh
+bash scripts/run_creator_retention_signal_analysis.sh
 ```
 
-Artifacts are written to `data/pasted_race_humanization/` and
-`results/pasted_race/humanization_lexical_seed42/`; the existing
-Human-to-Polished checkpoint is not overwritten.
-
-Build and train the dual-trace four-class model:
+P3 trains all three Creator input variants for seeds 42/2026/3407:
 
 ```bash
-bash scripts/build_pasted_race_fourclass_dual.sh
-bash scripts/train_pasted_race_fourclass_dual_joint.sh
+bash scripts/train_creator_retention_p3_multiseed.sh
 ```
 
-### Creator Retention + Editor Modification
-
-Generate document-level Creator Retention labels with unrescaled SciBERT
-BERTScore Recall, then train the joint four-class model:
+P5 and P6 use the official Creator+Editor config and run sequentially. For a
+persistent detached execution:
 
 ```bash
-bash scripts/build_creator_retention_data.sh
-bash scripts/train_pasted_race_creator_editor.sh
+tmux new-session -d -s pasted_p5_p6 \
+  'cd /home/dx/RACE_LE_RACE && bash scripts/resume_p5_p6_persistent.sh'
 ```
 
-The paired creator text is used only for offline target generation. Model
-inference consumes only the final document. The two existing EDU `1-BLEU4`
-heads remain the direction-specific Editor Modification supervision.
+The source/creator text is used only for offline label construction; inference
+receives only the final document. P5/P6 reuse matching-seed Strong RACE,
+Creator, polishing, and humanization checkpoints. Final results are aggregated
+under `reports/creator_editor_p5_p6_final/`. The currently established results
+are summarized in `reports/current_experiment_results_2026-09-15.md`.
+
+After P6, reproduce the paper's Figure 4 length intervals on all canonical
+three-seed saved logits with:
+
+```bash
+bash scripts/queue_length_analysis_after_p6.sh
+```
+
+The launcher waits for P6 and then performs CPU-only analysis; it does not
+start another training run. Results are written to
+`reports/length_analysis_group_safe/`. Length means the complete final text's
+RoBERTa token count, with half-open bins `0–200`, `200–400`, `400–600`,
+`600–800`, and `800+`.
 
 ## 8. Citation
 
